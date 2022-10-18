@@ -1,0 +1,697 @@
+---
+title: "bulk-rnaseq_setbp1"
+author: "Gokberk Alagoz, L&G Dept., MPI for Psycholinguistics"
+date: "`r Sys.Date()`"
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/scripts/")
+library(Rsubread)
+library(biomaRt)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(DESeq2)
+library(vsn)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(circlize)
+library(cowplot)
+#library(clusterProfiler)
+library(topGO)
+library(VennDiagram)
+source("custom_plotPCA.R")
+```
+
+## 
+
+```{r data_prep}
+
+deseq_outDir = "/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/"
+
+# Read bam files
+list_of_bam1 = list.files(path = "/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/setbp1_hdf_b1_rna/X201SC19120602-Z01-F003/bam", pattern = ".bam$", full.names = T)
+list_of_bam2 = list.files(path = "/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/20211123_setbp1_hdf_b2_rna/X201SC21072043-Z01-F002/bam", pattern = ".bam$", full.names = T)
+
+list_of_bam = c(list_of_bam1,list_of_bam2)
+
+# Create a count table
+rsubread.counts = featureCounts(list_of_bam, 
+                                annot.ext="/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/20211123_setbp1_hdf_b2_rna/X201SC21072043-Z01-F002/ref/genome.gtf/genome.gtf",
+                                isGTFAnnotationFile = TRUE,
+                                GTF.featureType = "exon",
+                                GTF.attrType = "gene_id",
+                                useMetaFeatures = TRUE,
+                                allowMultiOverlap = FALSE,
+                                isPairedEnd = TRUE,
+                                requireBothEndsMapped = TRUE)
+
+
+# Save the count table as an R object
+#save(rsubread.counts, file = "/data/workspaces/lag/workspaces/lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_HDF/featureCounts/rsubread.counts.RData")
+load("/data/workspaces/lag/workspaces/lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_HDF/featureCounts/rsubread.counts.RData")
+
+# Get read counts per gene
+rcounts = rsubread.counts$counts
+# Get gene annotations
+annot = rsubread.counts$annotation
+
+head(rcounts)
+dim(rcounts)
+# there are 58,735 genes and 69 samples
+
+# Load the metadata of your samples
+inf = read.table("/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/sample_name_condition_v2.csv", skipNul = T, header = T)
+#inf = read.table("/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/sample_name_condition_v2.txt", skipNul = T, header = T)
+```
+
+## 
+
+```{r prep4deseq}
+
+# Check the mean gene length
+summary(annot$Length)
+
+# Take out all transcripts that have no reads in any of the experiments
+rcounts = rcounts[(rowSums(rcounts)>0),]
+
+# Make countdata a dataframe
+countdata = data.frame(GeneID = rownames(rcounts), rcounts)
+
+# Add geneLength to annot
+# Here, 150 in mutate() function is the mean read length. I pulled out this number from multiqc results:
+# /data/workspaces/lag/workspaces/lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_HDF/multiqc/multiqc/Alignment_QC_Report_data.pdf
+countdata = annot %>%
+            dplyr::select(GeneID, Length) %>%
+            inner_join(countdata) %>%
+            mutate(Length = Length-150+1) %>%
+            filter(Length>1) # filter short genes
+
+# Now we divide first by the gene Length and then the colsums
+# This changes all numeric colums
+# The dot refers to the current value
+tpm = countdata %>%
+      mutate_if(is.numeric,funs(rpk=./Length*1e3)) %>%
+      mutate_if(is.numeric,funs(tpm=./sum(.)*1e6)) %>%
+      # only want to keep the new columns
+      dplyr::select(GeneID, contains("rpk_tpm"), -Length_rpk_tpm)
+
+#change column names back
+names(tpm) = colnames(countdata)[-2]
+
+```
+
+# Check how comparable the TPMs are across samples
+
+```{r checkpoint_plot1}
+
+# Avoid having log(0) by simply adding the minimum TPM > 0 to each sample
+
+expMin = apply(tpm[,-1],2,function(x){min(x[x>0])})
+
+log_tpm = log10(t(tpm[,-1]) + expMin)
+
+# Transposing with t() made TPM a matrix,
+# Transpose back and revert to data.frame
+# Make long format
+
+tpm_long = data.frame(t(log_tpm)) %>%
+           gather(key= "SRR", value = "log10_TPM" )
+
+head(tpm_long)
+
+ggplot(tpm_long,aes(x=SRR,y=log10_TPM)) +
+       geom_boxplot() +
+       coord_flip() +
+       ylab(expression(log[10](TPM)))
+
+#ggsave("/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/TPM_comparison_boxplots.pdf", width = 12, height = 20, units = "cm")
+
+```
+
+# Continue filtering before running DE analysis.
+
+```{r prep4deseq_part2}
+
+nrow(countdata)
+# There are still 38,048 genes in our count table
+# Filter further to 1) get rid off zeros in the matrix and
+# improve normalization and 2) to filter out very lowly
+# expressed genes, cuz you can't detect differential
+# expression for those genes anyway.
+
+# Calculate how many genes are expressed in each sample
+tpm %>% summarise_if(is.numeric, funs(sum(.>=1)))
+
+# Move geneIDs to rownames, remove that column
+rownames(tpm) = tpm[,1]
+tpm = tpm[,-1]
+
+# Condition only 10 samples are allowed to have a TPM < 1
+# Note that this 10 samples threshold is arbitrary.
+
+cut = dim(tpm)[2] - 10
+sum(apply(tpm, 1, function(x){sum(x>=1)>=cut}))
+# 13,116 genes pass this threshold
+# So we reduced gene number from 38k to 13k - success!
+
+filt = tpm[apply(tpm, 1, function(x){sum(x>=1)>=cut}),]
+tpm_filt_counts = rcounts[match(rownames(filt),rownames(rcounts)),]
+
+```
+
+# Run differential expression analysis with "DESeq2".
+
+```{r DEanalysis}
+
+head(inf)
+
+# Make sure that the IDs in the info table have
+# the same order as the columns in the count table
+rownames(inf) = inf$ID # make IDs rownames
+colnames(rcounts) = str_replace(colnames(rcounts), ".bam", "") # remove ".bam" from colnames
+colnames(tpm_filt_counts) = str_replace(colnames(tpm_filt_counts), ".bam", "") # remove ".bam" from colnames
+tpm_filt_counts = tpm_filt_counts[, rownames(inf)] # order columns based on sample list in inf
+
+colnames(tpm_filt_counts) == rownames(inf) # check if it worked (all should be TRUE)
+
+# DESeq design w/condition, sex, batch
+dds = DESeqDataSetFromMatrix(countData = tpm_filt_counts,
+                             colData = inf,
+                             design = ~condition+sex+batch+age_at_sampling)
+
+design(dds)
+
+dds = estimateSizeFactors(dds)
+summary(sizeFactors(dds))
+
+#saveRDS(dds, file="/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/deseq_results/dds.rds")
+readRDS(dds, file="/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/deseq_results/dds.rds")
+
+plotDispEsts(dds)
+
+vsd = varianceStabilizingTransformation(dds)
+
+# Remove batch effect only for visualization purpose.
+# Important Note: DESeq2 takes raw count numbers as input, and
+# models batch effect. Thus, DE gene lists are not affected
+# by this removeBatchEffect step.
+# See what Mike Love says here: https://support.bioconductor.org/p/104290/
+assay(vsd) <- limma::removeBatchEffect(assay(vsd), vsd$batch)
+plotPCA(vsd, "batch")
+
+# Extract a matrix of normalized counts from the S4 object vsd
+vsdMat = assay(vsd)
+
+meanSdPlot(as.matrix(tpm))
+meanSdPlot(t(log_tpm))
+meanSdPlot(vsdMat)
+
+# PCA using the 500 most variable genes from the variance-stabilized data
+nudge <- position_nudge(x = 2, y = 2)
+
+p1 = plotPCA.san(vsd, intgroup = "condition", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2)
+
+p2 = plotPCA.san(vsd, intgroup = "batch", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text(aes(label = name), position = nudge)
+  geom_text_repel(aes(label = name), size = 2)
+
+p3 = plotPCA.san(vsd, intgroup = "sex", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text(aes(label = name), position = nudge)
+  geom_text_repel(aes(label = name), size = 2)
+
+p4 = plotPCA.san(vsd, intgroup = "age_at_sampling", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text(aes(label = name), position = nudge)
+  geom_text_repel(aes(label = name), size = 2)
+
+plot_grid(p1, p4, p3, p2, nrow = 2, ncol = 2)
+ggsave(paste0(deseq_outDir, "PCA_4categories_v2.pdf"), width = 15, height = 10)
+
+# Run DESeq for different combinations of conditions
+# to make volcano plots
+dds2 = DESeq(dds, betaPrior = FALSE)
+
+# Control vs. Outside_degron
+res1 = results(dds2, contrast = c("condition", "Control", "Outside_degron"))
+res1 = lfcShrink(dds2, contrast = c("condition", "Control", "Outside_degron"), res=res1, type = "normal")
+res1$symbol = mapIds(org.Hs.eg.db, keys=row.names(res1), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+#write.csv(as.data.frame(res), paste0(deseq_outDir,
+#                                     "res_ControlvsOutsideDegron.csv"), quote = F)
+
+# Control vs. within_degron/SGS
+res2 = results(dds2, contrast = c("condition", "Control", "within_degron/SGS"))
+res2 = lfcShrink(dds2, contrast = c("condition", "Control", "within_degron/SGS"), res=res2, type = "normal")
+res2$symbol = mapIds(org.Hs.eg.db, keys=row.names(res2), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+#write.csv(as.data.frame(res2), paste0(deseq_outDir,
+#                                     "res_ControlvsWithin_degronSGS.csv"), quote = F)
+
+# Control vs. Truncating
+res3 = results(dds2, contrast = c("condition", "Control", "truncating"))
+res3 = lfcShrink(dds2, contrast = c("condition", "Control", "truncating"), res=res3, type = "normal")
+res3$symbol = mapIds(org.Hs.eg.db, keys=row.names(res3), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+#write.csv(as.data.frame(res3), paste0(deseq_outDir,
+#                                     "res_ControlvsTruncating.csv"), quote = F)
+
+# Control vs. Outside
+res4 = results(dds2, contrast = c("condition", "Control", "Outside"))
+res4 = lfcShrink(dds2, contrast = c("condition", "Control", "Outside"), res=res4, type = "normal")
+res4$symbol = mapIds(org.Hs.eg.db, keys=row.names(res4), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+#write.csv(as.data.frame(res4), paste0(deseq_outDir,
+#                                     "res_ControlvsOutside.csv"), quote = F)
+
+# Outside_degron vs. within_degron/SGS
+res5 = results(dds2, contrast = c("condition", "Outside_degron", "within_degron/SGS"))
+res5 = lfcShrink(dds2, contrast = c("condition", "Outside_degron", "within_degron/SGS"), res=res5, type = "normal")
+res5$symbol = mapIds(org.Hs.eg.db, keys=row.names(res5), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+#write.csv(as.data.frame(res5), paste0(deseq_outDir,
+#                                     "res_Outside_degronvsWithin_degronSGS.csv"), quote = F)
+
+```
+
+```{r volcanoPlots}
+
+# Plot and save volcanoplots
+
+pdf(paste0(deseq_outDir, "Volcano-ControlvsOutsideDegron.pdf"), width = 7, height = 8)
+EnhancedVolcano(res1, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+
+pdf(paste0(deseq_outDir, "Volcano-ControlvsWithin_degronSGS.pdf"), width = 7, height = 8)
+EnhancedVolcano(res2, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+
+pdf(paste0(deseq_outDir, "Volcano-ControlvsTruncating.pdf"), width = 7, height = 8)
+EnhancedVolcano(res3, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+
+pdf(paste0(deseq_outDir, "Volcano-ControlvsOutside.pdf"), width = 7, height = 8)
+EnhancedVolcano(res4, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE, )
+dev.off()
+
+pdf(paste0(deseq_outDir, "Volcano-Outside_degronvsWithin_degronSGS.pdf"), width = 7, height = 8)
+EnhancedVolcano(res5, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+```
+
+```{r getDEgeneCounts}
+
+get_upregulated = function(df){
+
+    df = as.data.frame(df)
+  
+    key = intersect(rownames(df)[which(df$log2FoldChange>=1)], rownames(df)[which(df$padj<=0.05)])
+
+    results = as.data.frame((df)[which(rownames(df) %in% key),])
+    return(results)
+}
+
+get_downregulated = function(df){
+
+    df = as.data.frame(df)
+  
+    key = intersect(rownames(df)[which(df$log2FoldChange<=-1)], rownames(df)[which(df$padj<=0.05)])
+
+    results = as.data.frame((df)[which(rownames(df) %in% key),])
+    return(results)
+}
+
+for (i in 1:5) {
+  
+  up_list = get_upregulated(get(paste0("res", i)))
+  write.table(up_list, paste0(deseq_outDir,"sigUpRegulatedGenes_res", i, ".tab"),
+              quote = F, sep = "\t")
+  
+  }
+
+for (i in 1:5) {
+  
+  down_list = get_downregulated(get(paste0("res", i)))
+  write.table(down_list, paste0(deseq_outDir,"sigDownRegulatedGenes_res", i, ".tab"),
+              quote = F, sep = "\t")
+  
+  }
+
+```
+
+
+```{r heatmaps}
+
+# We can’t plot the entire data set, let’s just select the top 300 by padj
+# Get top 300 differentially expressed genes
+# between Control and Outside_degron samples
+
+# First, add gene IDs as a column
+res1$geneIDs = rownames(res1)
+
+sigGenes_ControlvsOutside_degron = as.data.frame(res1) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+# We’ll use normalised expression values, so we’ll use the vst function -> Changed this, see below
+#plotDat_ControlvsOutside_degron <- vst(dds)[sigGenes_ControlvsOutside_degron,] %>% 
+#  assay()
+# Here we used Batch Effect Removed (with limma) vsd file to see heatmaps without batch effect
+plotDat_ControlvsOutside_degron <- vsd[sigGenes_ControlvsOutside_degron,] %>% 
+  assay()
+
+z.mat_ControlvsOutside_degron <- t(scale(t(plotDat_ControlvsOutside_degron), center=TRUE, scale=TRUE))
+
+myPalette <- c("royalblue3", "ivory", "orangered3")
+myRamp <- colorRamp2(c(-2, 0, 2), myPalette)
+
+ha = HeatmapAnnotation(df = colData(dds)[,c("condition", "batch", "sex")],
+                        col = list(condition = c("Control" = "pink", "Outside" = "purple",
+                                                 "Outside_degron"="lightblue", "truncating" = "red",
+                                                 "within_degron/SGS" = "green"),
+                                   batch = c("b1" = "lightblue", "b2" = "darkblue"),
+                                   sex = c("M" = "orange", "F" = "darkgreen")))
+
+pdf(file = paste0(deseq_outDir, "heatmap_top300DEgenes_ControlvsOutside_degron_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_ControlvsOutside_degron, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+# Get top 300 differentially expressed genes between Control and within_degron/SGS
+
+res2$geneIDs = rownames(res2)
+
+sigGenes_ControlvsWithin_degronSGS = as.data.frame(res2) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+#plotDat_ControlvsWithin_degronSGS <- vst(dds)[sigGenes_ControlvsWithin_degronSGS,] %>% 
+#  assay()
+plotDat_ControlvsWithin_degronSGS <- vsd[sigGenes_ControlvsWithin_degronSGS,] %>% 
+  assay()
+z.mat_ControlvsWithin_degronSGS <- t(scale(t(plotDat_ControlvsWithin_degronSGS), center=TRUE, scale=TRUE))
+
+pdf(file = paste0(deseq_outDir, "heatmap_top300DEgenes_ControlvsWithin_degronSGS_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_ControlvsWithin_degronSGS, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+# Get top 300 differentially expressed genes between Control vs. Truncating
+
+res3$geneIDs = rownames(res3)
+
+sigGenes_ControlvsTruncating = as.data.frame(res3) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+#plotDat_ControlvsTruncating <- vst(dds)[sigGenes_ControlvsTruncating,] %>% 
+#  assay()
+plotDat_ControlvsTruncating <- vsd[sigGenes_ControlvsTruncating,] %>% 
+  assay()
+z.mat_ControlvsTruncating <- t(scale(t(plotDat_ControlvsTruncating), center=TRUE, scale=TRUE))
+
+pdf(file = paste0(deseq_outDir, "heatmap_top300DEgenes_ControlvsTruncating_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_ControlvsTruncating, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+# Get top 300 differentially expressed genes between Control vs. Outside
+
+res4$geneIDs = rownames(res4)
+
+sigGenes_ControlvsOutside = as.data.frame(res4) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+#plotDat_ControlvsOutside <- vst(dds)[sigGenes_ControlvsOutside,] %>% 
+#  assay()
+plotDat_ControlvsOutside <- vsd[sigGenes_ControlvsOutside,] %>% 
+  assay()
+z.mat_ControlvsOutside <- t(scale(t(plotDat_ControlvsOutside), center=TRUE, scale=TRUE))
+
+pdf(file = paste0(deseq_outDir, "heatmap_top300DEgenes_ControlvsOutside_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_ControlvsOutside, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+# Get top 300 differentially expressed genes between Outside_degron vs. within_degron/SGS
+
+res5$geneIDs = rownames(res5)
+
+sigGenes_Outside_degronvsWithin_degronSGS = as.data.frame(res5) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+#plotDat_Outside_degronvsWithin_degronSGS <- vst(dds)[sigGenes_Outside_degronvsWithin_degronSGS,] %>% 
+#  assay()
+plotDat_Outside_degronvsWithin_degronSGS <- vsd[sigGenes_Outside_degronvsWithin_degronSGS,] %>% 
+  assay()
+z.mat_Outside_degronvsWithin_degronSGS <- t(scale(t(plotDat_Outside_degronvsWithin_degronSGS), center=TRUE, scale=TRUE))
+
+pdf(file = paste0(deseq_outDir, "heatmap_top300DEgenes_Outside_degronvsWithin_degronSGS_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_Outside_degronvsWithin_degronSGS, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+```
+
+```{r goanalysis}
+
+for (i in 1:5) {
+
+tmp_df = data.frame(rn = rownames(get(paste0("res",i))), get(paste0("res",i))) %>%
+       na.omit() %>%
+       mutate(up = ifelse(log2FoldChange>0, padj, 1))
+
+# set the p-value for down regulations to 1
+# make a named vector
+tmp_condition_up = tmp_df$up
+names(tmp_condition_up) <- tmp_df$rn
+
+topDiffGenes<-function(x){ return(x<=0.1) }
+
+# 1) BP
+
+tg.BP = new("topGOdata",#just a name
+            description="tmp_condition_up",
+            ontology="BP",
+            allGenes=tmp_condition_up, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="ENSEMBL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.BP, paste0(deseq_outDir, "GO_BP_upRegulated_", i,".rds"))
+
+numGenes(tg.BP)
+
+numSigGenes(tg.BP)
+
+fisher.res = runTest(tg.BP, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_BP = GenTable(tg.BP, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# 2) CC
+
+tg.CC = new("topGOdata",#just a name
+            description="tmp_condition_up",
+            ontology="CC",
+            allGenes=tmp_condition_up, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="ENSEMBL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.CC, paste0(deseq_outDir, "GO_CC_upRegulated_", i,".rds"))
+
+numGenes(tg.CC)
+
+numSigGenes(tg.CC)
+
+fisher.res = runTest(tg.CC, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_CC = GenTable(tg.CC, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# 3) MF
+
+tg.MF = new("topGOdata",#just a name
+            description="tmp_condition_up",
+            ontology="MF",
+            allGenes=tmp_condition_up, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="ENSEMBL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.MF, paste0(deseq_outDir, "GO_MF_upRegulated_", i,".rds"))
+
+numGenes(tg.MF)
+
+numSigGenes(tg.MF)
+
+fisher.res = runTest(tg.MF, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_MF = GenTable(tg.MF, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# Plot
+
+fishtab_BP2 = fishtab_BP[1:10, c(2,4)]
+fishtab_BP2$ontology = "BP"
+fishtab_CC2 = fishtab_CC[1:10, c(2,4)]
+fishtab_CC2$ontology = "CC"
+fishtab_MF2 = fishtab_MF[1:10, c(2,4)]
+fishtab_MF2$ontology = "MF"
+
+p1 = ggplot(fishtab_BP2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "green") + ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+p2 = ggplot(fishtab_CC2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "red") + labs(x = "GO Terms") +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() +
+  theme(axis.title.x=element_blank())
+p3 = ggplot(fishtab_MF2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "blue") +  labs(y = "Number of genes") +  ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.title.y=element_blank())
+
+plot_grid(p1, p2, p3, nrow = 3, ncol = 1)
+ggsave(paste0(deseq_outDir, "GOterms_", i,".pdf"), width = 8, height = 15)
+
+}
+
+```
+```{r vennDiagram}
+
+# Outside degron vs within degron vs truncating
+
+# Significantly UPregulated genes in Control vs 3 conditions
+outside_up = read.table(paste0(deseq_outDir, "sigUpRegulatedGenes_res1.tab"), header = T)
+inside_up = read.table(paste0(deseq_outDir, "sigUpRegulatedGenes_res2.tab"), header = T)
+truncating_up = read.table(paste0(deseq_outDir, "sigUpRegulatedGenes_res3.tab"), header = T)
+
+n12_up = length(intersect(rownames(outside_up),rownames(inside_up)))
+n23_up = length(intersect(rownames(inside_up),rownames(truncating_up)))
+n13_up = length(intersect(rownames(outside_up),rownames(truncating_up)))
+n123_up = length(intersect(rownames(truncating_up),intersect(rownames(outside_up),rownames(inside_up))))
+
+venn_up = draw.triple.venn(nrow(outside_up),nrow(inside_up),nrow(truncating_up),
+                 n12_up, n23_up, n13_up, n123_up,
+                 c("Outside_degron", "Inside_degron", "Truncating"),
+                 fill = c("blue", "red", "green"))
+pdf(paste0(deseq_outDir, "venn_sigDEgenesUp_outsideVSinsideVStruncating.pdf"),
+    width = 12, height = 8)
+grid.draw(venn_up)
+dev.off()
+
+# Significantly DOWNregulated genes in Control vs 3 conditions
+outside_down = read.table(paste0(deseq_outDir, "sigDownRegulatedGenes_res1.tab"), header = T)
+inside_down = read.table(paste0(deseq_outDir, "sigDownRegulatedGenes_res2.tab"), header = T)
+truncating_down = read.table(paste0(deseq_outDir, "sigDownRegulatedGenes_res3.tab"), header = T)
+
+n12_down = length(intersect(rownames(outside_down),rownames(inside_down)))
+n23_down = length(intersect(rownames(inside_down),rownames(truncating_down)))
+n13_down = length(intersect(rownames(outside_down),rownames(truncating_down)))
+n123_down = length(intersect(rownames(truncating_down),intersect(rownames(outside_down),rownames(inside_down))))
+
+venn_down = draw.triple.venn(nrow(outside_down),nrow(inside_down),nrow(truncating_down),
+                 n12_down, n23_down, n13_down, n123_down,
+                 c("Outside_degron", "Inside_degron", "Truncating"),
+                 fill = c("blue", "red", "green"))
+pdf(paste0(deseq_outDir, "venn_sigDEgenesDown_outsideVSinsideVStruncating.pdf"),
+    width = 12, height = 8)
+grid.draw(venn_down)
+dev.off()
+```
+
+```{r lookForOverlaps}
+
+# Here we will look for overlaps between sig DE genes between Control vs. each Condition
+# and SETBP1 targets.
+
+setbp1_targets = read.csv2("/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/Top70_putative_SETBP1_bindingsites.csv", header = F)
+
+deseq_files = list.files(paste0(deseq_outDir, "deseq_results"), pattern = ".csv", full.names = T)
+
+for (i in deseq_files) {
+  
+  tmp_f = read.csv(i, header = T)
+  tmp_f_name = strsplit(i, "/")[[1]][13]
+  
+  if (any(setbp1_targets %in% tmp_f$symbol)) {
+    
+    write.csv(intersect(setbp1_targets, tmp_f$symbol), 
+              file = paste0(deseq_outDir, "deseq_results/setbp1_overlap_", tmp_f_name))
+    
+  }
+  else
+    print("no overlap for this one")
+    
+}
+
+# No overlap
+
+```
+

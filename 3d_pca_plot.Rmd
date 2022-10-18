@@ -1,0 +1,76 @@
+---
+title: "3D PCA plots"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rgl)
+```
+
+## 3D PCA plots
+Code from https://stackoverflow.com/questions/24282143/pca-multiplot-in-r is used.
+
+```{r read and reformat data}
+d=read.table("/data/workspaces/lag/workspaces/lg-protein-group/working_data/Maggie/Projects/SETBP1_HDF_RNAseq/working/seqmonk-windows/4_clustering/PCA/PCA.txt", header=TRUE, sep="\t")
+outDir="/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/"
+  
+rv <- rowVars(assay(vsd))
+select <- order(rv, decreasing = TRUE)[seq_len(min(500, length(rv)))]
+pca <- prcomp(t(assay(vsd)[select,]))
+
+#rownames(d)=d$DataStore
+#d=d[,-1]
+#model <- prcomp(t(d), scale=TRUE)
+```
+
+```{r plot function, echo=FALSE}
+fit <- hclust(dist(pca$x[,1:3]), method="complete") # 1:3 -> based on 3 components
+groups <- cutree(fit, k=3)                            # k=3 -> 3 groups
+
+plotPCA <- function(x, nGroup) {
+    n <- ncol(x) 
+    if(!(n %in% c(2,3))) { # check if 2d or 3d
+        stop("x must have either 2 or 3 columns")
+    }
+
+    fit <- hclust(dist(x), method="complete") # cluster
+    groups <- cutree(fit, k=nGroup)
+
+    if(n == 3) { # 3d plot
+        plot3d(x, col=groups, type="s", size=1, axes=F)
+        axes3d(edges=c("x--", "y--", "z"), lwd=3, axes.len=2, labels=FALSE)
+        grid3d("x")
+        grid3d("y")
+        grid3d("z")
+    } else { # 2d plot
+        maxes <- apply(abs(x), 2, max)
+        rangeX <- c(-maxes[1], maxes[1])
+        rangeY <- c(-maxes[2], maxes[2])
+        plot(x, col=groups, pch=19, xlab=colnames(x)[1], ylab=colnames(x)[2], xlim=rangeX, ylim=rangeY)
+        lines(c(0,0), rangeX*2)
+        lines(rangeY*2, c(0,0))
+    }
+}
+```
+
+```{r 2d, fig.width=5, fig.height=5}
+plotPCA(model$x[,1:2], 5)
+```
+
+```{r 3d}
+d3_plot_df = cbind.data.frame(pca$x,inf$condition)
+colnames(d3_plot_df)[70]="condition"
+d3_plot_df$condition=str_replace(d3_plot_df$condition, "Control", "grey")
+d3_plot_df$condition=str_replace(d3_plot_df$condition, "Outside_degron", "red")
+d3_plot_df$condition=str_replace(d3_plot_df$condition, "within_degron/SGS", "green")
+d3_plot_df$condition=str_replace(d3_plot_df$condition, "truncating", "blue")
+
+#plotPCA(pca$x[,1:3], 4)
+plot3d(d3_plot_df[,1:3], col = as.factor(d3_plot_df$condition), size = 5)
+rgl.postscript(paste0(outDir,"3dplot_v2.pdf"), fmt = 'pdf')
+
+plot3d(d3_plot_df[,4:6], col = as.factor(d3_plot_df$condition), size = 5)
+rgl.postscript(paste0(outDir,"3dplot_456.pdf"), fmt = 'pdf')
+
+```
