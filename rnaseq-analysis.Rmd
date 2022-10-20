@@ -25,6 +25,7 @@ library(cowplot)
 library(topGO)
 library(VennDiagram)
 source("custom_plotPCA.R")
+library(EnsDb.Hsapiens.v79)
 ```
 
 ## 
@@ -240,54 +241,61 @@ plot_grid(p1, p4, p3, p2, nrow = 2, ncol = 2)
 # to make volcano plots
 dds2 = DESeq(dds, betaPrior = FALSE)
 
-# Control vs. Outside_degron
-res1 = results(dds2, contrast = c("condition", "Control", "Outside_degron"))
-res1 = lfcShrink(dds2, contrast = c("condition", "Control", "Outside_degron"), res=res1, type = "normal")
-res1$symbol = mapIds(org.Hs.eg.db, keys=row.names(res1), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+## Control vs. Outside_degron
+#res1 = results(dds2, contrast = c("condition", "Control", "Outside_degron"))
+#res1 = lfcShrink(dds2, contrast = c("condition", "Control", "Outside_degron"), res=res1, type = "normal")
+#res1$symbol = mapIds(org.Hs.eg.db, keys=row.names(res1), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
 #write.csv(as.data.frame(res1), paste0(deseq_outDir,
 #                                     "deseq_results/res_ControlvsOutsideDegron.csv"), quote = F)
+res1 = read.csv(paste0(deseq_outDir, "deseq_results/res_ControlvsOutsideDegron.csv"), header = T)
 
-# Control vs. within_degron/SGS
-res2 = results(dds2, contrast = c("condition", "Control", "within_degron/SGS"))
-res2 = lfcShrink(dds2, contrast = c("condition", "Control", "within_degron/SGS"), res=res2, type = "normal")
-res2$symbol = mapIds(org.Hs.eg.db, keys=row.names(res2), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+## Control vs. within_degron/SGS
+#res2 = results(dds2, contrast = c("condition", "Control", "within_degron/SGS"))
+#res2 = lfcShrink(dds2, contrast = c("condition", "Control", "within_degron/SGS"), res=res2, type = "normal")
+#res2$symbol = mapIds(org.Hs.eg.db, keys=row.names(res2), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
 #write.csv(as.data.frame(res2), paste0(deseq_outDir,
 #                                     "deseq_results/res_ControlvsWithin_degronSGS.csv"), quote = F)
+res2 = read.csv(paste0(deseq_outDir, "deseq_results/res_ControlvsWithin_degronSGS.csv"), header = T)
 
-# Control vs. Truncating
-res3 = results(dds2, contrast = c("condition", "Control", "truncating"))
-res3 = lfcShrink(dds2, contrast = c("condition", "Control", "truncating"), res=res3, type = "normal")
-res3$symbol = mapIds(org.Hs.eg.db, keys=row.names(res3), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+## Control vs. Truncating
+#res3 = results(dds2, contrast = c("condition", "Control", "truncating"))
+#res3 = lfcShrink(dds2, contrast = c("condition", "Control", "truncating"), res=res3, type = "normal")
+#res3$symbol = mapIds(org.Hs.eg.db, keys=row.names(res3), column="SYMBOL", keytype="ENSEMBL", #multiVals="first")
 #write.csv(as.data.frame(res3), paste0(deseq_outDir,
 #                                     "deseq_results/res_ControlvsTruncating.csv"), quote = F)
+res3 = read.csv(paste0(deseq_outDir, "deseq_results/res_ControlvsTruncating.csv"), header = T)
 
-# Control vs. Outside
+## Control vs. Outside
 #res4 = results(dds2, contrast = c("condition", "Control", "Outside"))
 #res4 = lfcShrink(dds2, contrast = c("condition", "Control", "Outside"), res=res4, type = "normal")
 #res4$symbol = mapIds(org.Hs.eg.db, keys=row.names(res4), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
 #write.csv(as.data.frame(res4), paste0(deseq_outDir,
 #                                     "deseq_results/res_ControlvsOutside.csv"), quote = F)
+#res4 = read.csv(paste0(deseq_outDir, "deseq_results/res_ControlvsOutside.csv"), header = T)
 
-# Outside_degron vs. within_degron/SGS
-res5 = results(dds2, contrast = c("condition", "Outside_degron", "within_degron/SGS"))
-res5 = lfcShrink(dds2, contrast = c("condition", "Outside_degron", "within_degron/SGS"), res=res5, type = "normal")
-res5$symbol = mapIds(org.Hs.eg.db, keys=row.names(res5), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+## Outside_degron vs. within_degron/SGS
+#res5 = results(dds2, contrast = c("condition", "Outside_degron", "within_degron/SGS"))
+#res5 = lfcShrink(dds2, contrast = c("condition", "Outside_degron", "within_degron/SGS"), res=res5, type = "normal")
+#res5$symbol = mapIds(org.Hs.eg.db, keys=row.names(res5), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
 #write.csv(as.data.frame(res5), paste0(deseq_outDir,
 #                                     "deseq_results/res_Outside_degronvsWithin_degronSGS.csv"), quote = F)
+res5 = read.csv(paste0(deseq_outDir, "deseq_results/res_Outside_degronvsWithin_degronSGS.csv"), header = T)
 
-# within_degron/SGS vs. truncating
-res6 = results(dds2, contrast = c("condition", "within_degron/SGS", "truncating"))
-res6 = lfcShrink(dds2, contrast = c("condition", "within_degron/SGS", "truncating"), res=res6, type = "normal")
-res6$symbol = mapIds(org.Hs.eg.db, keys=row.names(res6), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+## within_degron/SGS vs. truncating
+#res6 = results(dds2, contrast = c("condition", "within_degron/SGS", "truncating"))
+#res6 = lfcShrink(dds2, contrast = c("condition", "within_degron/SGS", "truncating"), res=res6, type = "normal")
+#res6$symbol = mapIds(org.Hs.eg.db, keys=row.names(res6), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
 #write.csv(as.data.frame(res6), paste0(deseq_outDir,
 #                                     "deseq_results/res_within_degronSGSvstruncating.csv"), quote = F)
+res6 = read.csv(paste0(deseq_outDir, "deseq_results/res_within_degronSGSvstruncating..csv"), header = T)
 
-# Outside_degron vs. truncating
-res7 = results(dds2, contrast = c("condition", "Outside_degron", "truncating"))
-res7 = lfcShrink(dds2, contrast = c("condition", "Outside_degron", "truncating"), res=res7, type = "normal")
-res7$symbol = mapIds(org.Hs.eg.db, keys=row.names(res7), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+## Outside_degron vs. truncating
+#res7 = results(dds2, contrast = c("condition", "Outside_degron", "truncating"))
+#res7 = lfcShrink(dds2, contrast = c("condition", "Outside_degron", "truncating"), res=res7, type = "normal")
+#res7$symbol = mapIds(org.Hs.eg.db, keys=row.names(res7), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
 #write.csv(as.data.frame(res7), paste0(deseq_outDir,
 #                                     "deseq_results/res_Outside_degronvstruncating.csv"), quote = F)
+res7 = read.csv(paste0(deseq_outDir, "deseq_results/res_Outside_degronvstruncating.csv"), header = T)
 
 ```
 
@@ -577,126 +585,188 @@ dev.off()
 ```{r goanalysis}
 
 for (i in 1:7) {
-      
-  if (i==4) next
-  tmp_df = data.frame(rn = rownames(get(paste0("res",i))), get(paste0("res",i))) %>%
-       na.omit() %>%
-       mutate(up = ifelse(log2FoldChange>0, padj, 1))
-
-# set the p-value for down regulations to 1
-# make a named vector
-tmp_condition_up = tmp_df$up
-names(tmp_condition_up) <- tmp_df$rn
-
-topDiffGenes<-function(x){ return(x<=0.1) }
-
-# 1) BP
-
-tg.BP = new("topGOdata",#just a name
-            description="tmp_condition_up",
-            ontology="BP",
-            allGenes=tmp_condition_up, #named vector with adj. p-values
-            geneSel=topDiffGenes,
-            annot=annFUN.org,
-            nodeSize = 10, #minimum number of genes in a GO categorie
-            ID="ENSEMBL",
-            mapping="org.Hs.eg.db")
-
-saveRDS(tg.BP, paste0(deseq_outDir, "GO_BP_upRegulated_", i,".rds"))
-
-numGenes(tg.BP)
-
-numSigGenes(tg.BP)
-
-fisher.res = runTest(tg.BP, algorithm="elim", statistic="fisher")
-fisher.res
-
-#p-value adjustment
-qval = p.adjust(score(fisher.res), method = "BH")
-summary(qval<0.1)
-
-fishtab_BP = GenTable(tg.BP, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
-
-# 2) CC
-
-tg.CC = new("topGOdata",#just a name
-            description="tmp_condition_up",
-            ontology="CC",
-            allGenes=tmp_condition_up, #named vector with adj. p-values
-            geneSel=topDiffGenes,
-            annot=annFUN.org,
-            nodeSize = 10, #minimum number of genes in a GO categorie
-            ID="ENSEMBL",
-            mapping="org.Hs.eg.db")
-
-saveRDS(tg.CC, paste0(deseq_outDir, "GO_CC_upRegulated_", i,".rds"))
-
-numGenes(tg.CC)
-
-numSigGenes(tg.CC)
-
-fisher.res = runTest(tg.CC, algorithm="elim", statistic="fisher")
-fisher.res
-
-#p-value adjustment
-qval = p.adjust(score(fisher.res), method = "BH")
-summary(qval<0.1)
-
-fishtab_CC = GenTable(tg.CC, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
-
-# 3) MF
-
-tg.MF = new("topGOdata",#just a name
-            description="tmp_condition_up",
-            ontology="MF",
-            allGenes=tmp_condition_up, #named vector with adj. p-values
-            geneSel=topDiffGenes,
-            annot=annFUN.org,
-            nodeSize = 10, #minimum number of genes in a GO categorie
-            ID="ENSEMBL",
-            mapping="org.Hs.eg.db")
-
-saveRDS(tg.MF, paste0(deseq_outDir, "GO_MF_upRegulated_", i,".rds"))
-
-numGenes(tg.MF)
-
-numSigGenes(tg.MF)
-
-fisher.res = runTest(tg.MF, algorithm="elim", statistic="fisher")
-fisher.res
-
-#p-value adjustment
-qval = p.adjust(score(fisher.res), method = "BH")
-summary(qval<0.1)
-
-fishtab_MF = GenTable(tg.MF, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
-
-# Plot
-
-fishtab_BP2 = fishtab_BP[1:10, c(2,4)]
-fishtab_BP2$ontology = "BP"
-fishtab_CC2 = fishtab_CC[1:10, c(2,4)]
-fishtab_CC2$ontology = "CC"
-fishtab_MF2 = fishtab_MF[1:10, c(2,4)]
-fishtab_MF2$ontology = "MF"
-
-p1 = ggplot(fishtab_BP2, aes(x = reorder(Term, Significant), y = Significant)) +
-  geom_bar(stat = "identity", fill = "green") + ylim(0, max(fishtab_CC2$Significant)) +
-  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
-  theme(axis.title.x=element_blank(),
-        axis.title.y=element_blank())
-p2 = ggplot(fishtab_CC2, aes(x = reorder(Term, Significant), y = Significant)) +
-  geom_bar(stat = "identity", fill = "red") + labs(x = "GO Terms") +
-  coord_flip() + facet_wrap(~ontology) + theme_minimal() +
-  theme(axis.title.x=element_blank())
-p3 = ggplot(fishtab_MF2, aes(x = reorder(Term, Significant), y = Significant)) +
-  geom_bar(stat = "identity", fill = "blue") +  labs(y = "Number of genes") +  ylim(0, max(fishtab_CC2$Significant)) +
-  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
-  theme(axis.title.y=element_blank())
-
-plot_grid(p1, p2, p3, nrow = 3, ncol = 1)
-#ggsave(paste0(deseq_outDir, "GOterms_", i,".pdf"), width = 8, height = 15)
-
+  if (i == 4)
+    next
+  
+  tmp_df = data.frame(rn = rownames(get(paste0("res", i))), get(paste0("res", i))) %>%
+    na.omit() %>%
+    mutate(up = ifelse(log2FoldChange > 0, padj, 1))
+  
+  # set the p-value for down regulations to 1
+  # make a named vector
+  tmp_condition_up = tmp_df$up
+  names(tmp_condition_up) <- tmp_df$rn
+  
+  topDiffGenes <- function(x) {
+    return(x <= 0.1)
+  }
+  
+  # 1) BP
+  # 
+  # tg.BP = new(
+  #   "topGOdata", #just a name
+  #   description = "tmp_condition_up",
+  #   ontology = "BP",
+  #   allGenes = tmp_condition_up, #named vector with adj. p-values
+  #   geneSel = topDiffGenes,
+  #   annot = annFUN.org,
+  #   nodeSize = 10, #minimum number of genes in a GO categorie
+  #   ID = "ENSEMBL",
+  #   mapping = "org.Hs.eg.db"
+  # )
+  
+  #saveRDS(tg.BP, paste0(deseq_outDir, "GOtermAnalysis/GO_BP_upRegulated_", i, ".rds"))
+  tg.BP = readRDS(paste0(deseq_outDir, "GOtermAnalysis/GO_BP_upRegulated_", i, ".rds"))
+  
+  #numGenes(tg.BP)
+  #numSigGenes(tg.BP)
+  
+  fisher.res = runTest(tg.BP, algorithm = "elim", statistic = "fisher")
+  #fisher.res
+  
+  #p-value adjustment
+  # qval = p.adjust(score(fisher.res), method = "BH")
+  #summary(qval < 0.1)
+  # 
+  fishtab_BP = GenTable(
+    tg.BP,
+    Fisher = fisher.res,
+    orderBy = "Fisher",
+    topNodes = geneData(fisher.res)[4]
+  )
+  # 
+  # retrieve geens2GO list from the annoation in GO data
+  allGO_BP = genesInTerm(tg.BP)
+  
+  # 2) CC
+  
+  # tg.CC = new(
+  #   "topGOdata", #just a name
+  #   description = "tmp_condition_up",
+  #   ontology = "CC",
+  #   allGenes = tmp_condition_up, #named vector with adj. p-values
+  #   geneSel = topDiffGenes,
+  #   annot = annFUN.org,
+  #   nodeSize = 10, #minimum number of genes in a GO categorie
+  #   ID = "ENSEMBL",
+  #   mapping = "org.Hs.eg.db"
+  # )
+  
+  #saveRDS(tg.CC, paste0(deseq_outDir, "GOtermAnalysis/GO_CC_upRegulated_", i, ".rds"))
+  tg.CC = readRDS(paste0(deseq_outDir, "GOtermAnalysis/GO_CC_upRegulated_", i, ".rds"))
+  
+  # numGenes(tg.CC)
+  # 
+  # numSigGenes(tg.CC)
+  # 
+  fisher.res = runTest(tg.CC, algorithm = "elim", statistic = "fisher")
+  # fisher.res
+  # 
+  #p-value adjustment
+  # qval = p.adjust(score(fisher.res), method = "BH")
+  # summary(qval < 0.1)
+  # 
+  fishtab_CC = GenTable(
+    tg.CC,
+    Fisher = fisher.res,
+    orderBy = "Fisher",
+    topNodes = geneData(fisher.res)[4]
+  )
+  
+  # retrieve geens2GO list from the annoation in GO data
+  allGO_CC = genesInTerm(tg.CC)
+  
+  # 3) MF
+  
+  # tg.MF = new(
+  #   "topGOdata", #just a name
+  #   description = "tmp_condition_up",
+  #   ontology = "MF",
+  #   allGenes = tmp_condition_up, #named vector with adj. p-values
+  #   geneSel = topDiffGenes,
+  #   annot = annFUN.org,
+  #   nodeSize = 10, #minimum number of genes in a GO categorie
+  #   ID = "ENSEMBL",
+  #   mapping = "org.Hs.eg.db"
+  # )
+  # 
+  
+  #saveRDS(tg.MF, paste0(deseq_outDir, "GOtermAnalysis/GO_MF_upRegulated_", i, ".rds"))
+  tg.MF = readRDS(paste0(deseq_outDir, "GOtermAnalysis/GO_MF_upRegulated_", i, ".rds"))
+  
+  # numGenes(tg.MF)
+  # 
+  # numSigGenes(tg.MF)
+  # 
+  fisher.res = runTest(tg.MF, algorithm = "elim", statistic = "fisher")
+  # fisher.res
+  
+  #p-value adjustment
+  # qval = p.adjust(score(fisher.res), method = "BH")
+  # summary(qval < 0.1)
+  # 
+  fishtab_MF = GenTable(
+    tg.MF,
+    Fisher = fisher.res,
+    orderBy = "Fisher",
+    topNodes = geneData(fisher.res)[4]
+  )
+  
+  # retrieve geens2GO list from the annoation in GO data
+  allGO_MF = genesInTerm(tg.MF)
+  
+  # Plot
+  
+  fishtab_BP2 = fishtab_BP[1:10, c(2, 4)]
+  fishtab_BP2$ontology = "BP"
+  fishtab_CC2 = fishtab_CC[1:10, c(2, 4)]
+  fishtab_CC2$ontology = "CC"
+  fishtab_MF2 = fishtab_MF[1:10, c(2, 4)]
+  fishtab_MF2$ontology = "MF"
+  
+  # p1 = ggplot(fishtab_BP2, aes(x = reorder(Term, Significant), y = Significant)) +
+  #   geom_bar(stat = "identity", fill = "green") + ylim(0, max(fishtab_CC2$Significant)) +
+  #   coord_flip() + facet_wrap( ~ ontology) + theme_minimal() +
+  #   theme(axis.title.x = element_blank(),
+  #         axis.title.y = element_blank())
+  # p2 = ggplot(fishtab_CC2, aes(x = reorder(Term, Significant), y = Significant)) +
+  #   geom_bar(stat = "identity", fill = "red") + labs(x = "GO Terms") +
+  #   coord_flip() + facet_wrap( ~ ontology) + theme_minimal() +
+  #   theme(axis.title.x = element_blank())
+  # p3 = ggplot(fishtab_MF2, aes(x = reorder(Term, Significant), y = Significant)) +
+  #   geom_bar(stat = "identity", fill = "blue") +  labs(y = "Number of genes") +  ylim(0, max(fishtab_CC2$Significant)) +
+  #   coord_flip() + facet_wrap( ~ ontology) + theme_minimal() +
+  #   theme(axis.title.y = element_blank())
+  
+  #plot_grid(p1, p2, p3, nrow = 3, ncol = 1)
+  #ggsave(paste0(deseq_outDir, "GOterms_", i,".pdf"), width = 8, height = 15)
+  
+  #####
+  # Make gene lists for each GO term in BP, CC and MF, for every condition pair
+  
+  go_terms_BP = fishtab_BP$GO.ID[1:10]
+  go_terms_CC = fishtab_CC$GO.ID[1:10]
+  go_terms_MF = fishtab_MF$GO.ID[1:10]
+  
+  for (j in c("BP", "CC", "MF")) {
+    
+    tmp_annotation = lapply(get(paste0("allGO_", j)), function(x) x[x %in% names(tmp_condition_up)])
+    
+      for (l in 1:10) {
+        
+        tmp_ensembl_gene_list = tmp_annotation[[get(paste0("go_terms_", j))[l]]]
+        
+        geneIDs = ensembldb::select(EnsDb.Hsapiens.v79, 
+                                    keys = tmp_ensembl_gene_list, 
+                                    keytype = "GENEID", 
+                                    columns = c("SYMBOL","GENEID"))
+        write.table(geneIDs, 
+                    paste0(deseq_outDir, "GOtermAnalysis/gene_lists/GO_geneList_", j, "_",
+                           noquote(get(paste0("go_terms_", j))[l]), 
+                           "_res_", i, ".txt"), quote = F, row.names = F)
+        
+      }
+  }
 }
 
 ```
@@ -711,30 +781,30 @@ inside_up = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_
 truncating_up = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_res3.tab"), header = T)
 
 n12_up = length(intersect(rownames(outside_up),rownames(inside_up)))
-write.table(outside_up[intersect(rownames(outside_up),rownames(inside_up)),"symbol"],
-            paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_outsidevsInsideOverlap_geneList.tab"),
-            quote = F, row.names = F, col.names = F)
+#write.table(outside_up[intersect(rownames(outside_up),rownames(inside_up)),"symbol"],
+#            paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_outsidevsInsideOverlap_geneList.tab"),
+#            quote = F, row.names = F, col.names = F)
 n23_up = length(intersect(rownames(inside_up),rownames(truncating_up)))
-write.table(outside_up[intersect(rownames(inside_up),rownames(truncating_up)),"symbol"],
-            paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_insidevsTruncating_geneList.tab"),
-            quote = F, row.names = F, col.names = F)
+#write.table(outside_up[intersect(rownames(inside_up),rownames(truncating_up)),"symbol"],
+#            paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_insidevsTruncating_geneList.tab"),
+#            quote = F, row.names = F, col.names = F)
 n13_up = length(intersect(rownames(outside_up),rownames(truncating_up)))
-write.table(outside_up[intersect(rownames(outside_up),rownames(truncating_up)),"symbol"],
-            paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_outsidevsTruncating_geneList.tab"),
-            quote = F, row.names = F, col.names = F)
+#write.table(outside_up[intersect(rownames(outside_up),rownames(truncating_up)),"symbol"],
+#            paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_outsidevsTruncating_geneList.tab"),
+#            quote = F, row.names = F, col.names = F)
 n123_up = length(intersect(rownames(truncating_up),intersect(rownames(outside_up),rownames(inside_up))))
-write.table(outside_up[intersect(rownames(truncating_up),intersect(rownames(outside_up),rownames(inside_up))),"symbol"],
-            paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_truncatingvsOutsidevsInside_geneList.tab"),
-            quote = F, row.names = F, col.names = F)
+#write.table(outside_up[intersect(rownames(truncating_up),intersect(rownames(outside_up),rownames(inside_up))),"symbol"],
+#            paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_truncatingvsOutsidevsInside_geneList.tab"),
+#            quote = F, row.names = F, col.names = F)
 
 venn_up = draw.triple.venn(nrow(outside_up),nrow(inside_up),nrow(truncating_up),
                  n12_up, n23_up, n13_up, n123_up,
                  c("Outside_degron", "Inside_degron", "Truncating"),
                  fill = c("blue", "red", "green"))
-#pdf(paste0(deseq_outDir, "venn_sigDEgenesUp_outsideVSinsideVStruncating.pdf"),
-#    width = 12, height = 8)
+pdf(paste0(deseq_outDir, "venn_sigDEgenesUp_outsideVSinsideVStruncating.pdf"),
+    width = 12, height = 8)
 grid.draw(venn_up)
-#dev.off()
+dev.off()
 
 # Significantly DOWNregulated genes in Control vs 3 conditions
 outside_down = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_res1.tab"), header = T)
@@ -743,30 +813,66 @@ truncating_down = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulat
 
 
 n12_down = length(intersect(rownames(outside_down),rownames(inside_down)))
-write.table(outside_down[intersect(rownames(outside_down),rownames(inside_down)),"symbol"],
-            paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_outsidevsInsideOverlap_geneList.tab"),
-            quote = F, row.names = F, col.names = F)
+#write.table(outside_down[intersect(rownames(outside_down),rownames(inside_down)),"symbol"],
+#            paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_outsidevsInsideOverlap_geneList.tab"),
+#            quote = F, row.names = F, col.names = F)
 n23_down = length(intersect(rownames(inside_down),rownames(truncating_down)))
-write.table(outside_down[intersect(rownames(inside_down),rownames(truncating_down)),"symbol"],
-            paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_insidevsTruncating_geneList.tab"),
-            quote = F, row.names = F, col.names = F)
+#write.table(outside_down[intersect(rownames(inside_down),rownames(truncating_down)),"symbol"],
+#            paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_insidevsTruncating_geneList.tab"),
+#            quote = F, row.names = F, col.names = F)
 n13_down = length(intersect(rownames(outside_down),rownames(truncating_down)))
-write.table(outside_down[intersect(rownames(outside_down),rownames(truncating_down)),"symbol"],
-            paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_outsidevsTruncating_geneList.tab"),
-            quote = F, row.names = F, col.names = F)
+#write.table(outside_down[intersect(rownames(outside_down),rownames(truncating_down)),"symbol"],
+#            paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_outsidevsTruncating_geneList.tab"),
+#            quote = F, row.names = F, col.names = F)
 n123_down = length(intersect(rownames(truncating_down),intersect(rownames(outside_down),rownames(inside_down))))
-write.table(outside_down[intersect(rownames(truncating_down),intersect(rownames(outside_down),rownames(inside_down))),"symbol"],
-            paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_truncatingvsOutsidevsInside_geneList.tab"),
-            quote = F, row.names = F, col.names = F)
+#write.table(outside_down[intersect(rownames(truncating_down),intersect(rownames(outside_down),rownames(inside_down))),"symbol"],
+#            paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_truncatingvsOutsidevsInside_geneList.tab"),
+#            quote = F, row.names = F, col.names = F)
 
 venn_down = draw.triple.venn(nrow(outside_down),nrow(inside_down),nrow(truncating_down),
                  n12_down, n23_down, n13_down, n123_down,
                  c("Outside_degron", "Inside_degron", "Truncating"),
                  fill = c("blue", "red", "green"))
-#pdf(paste0(deseq_outDir, "venn_sigDEgenesDown_outsideVSinsideVStruncating.pdf"),
-#    width = 12, height = 8)
+pdf(paste0(deseq_outDir, "venn_sigDEgenesDown_outsideVSinsideVStruncating.pdf"),
+    width = 12, height = 8)
 grid.draw(venn_down)
-#dev.off()
+dev.off()
+
+# Make a Venn Diagram for all sig DE genes
+# and also a print out list of them
+
+outside_DEG = rbind(outside_up, outside_down)
+inside_DEG = rbind(inside_up, inside_down)
+truncating_DEG = rbind(truncating_up, truncating_down)
+
+n12_DEG = length(intersect(rownames(outside_DEG),rownames(inside_DEG)))
+write.table(outside_DEG[intersect(rownames(outside_DEG),rownames(inside_DEG)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneLists/sigDEG_outsidevsInsideOverlap_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+n23_DEG = length(intersect(rownames(inside_DEG),rownames(truncating_DEG)))
+write.table(outside_DEG[intersect(rownames(inside_DEG),rownames(truncating_DEG)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneLists/sigDEG_insidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+n13_DEG = length(intersect(rownames(outside_DEG),rownames(truncating_DEG)))
+write.table(outside_DEG[intersect(rownames(outside_DEG),rownames(truncating_DEG)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneLists/sigDEG_outsidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+n123_DEG = length(intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))))
+write.table(outside_DEG[intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneLists/sigDEG_truncatingvsOutsidevsInside_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+venn_down = draw.triple.venn(nrow(outside_DEG),nrow(inside_DEG),nrow(truncating_DEG),
+                 n12_DEG, n23_DEG, n13_DEG, n123_DEG,
+                 c("Outside_degron", "Inside_degron", "Truncating"),
+                 fill = c("blue", "red", "green"))
+pdf(paste0(deseq_outDir, "vennDiagrams/venn_sigDEG_outsideVSinsideVStruncating.pdf"),
+    width = 12, height = 8)
+grid.draw(venn_down)
+dev.off()
 
 ```
 
@@ -838,7 +944,7 @@ for (i in deseq_files) {
 
 ```
 
-```{r}
+```{r DEgenes}
 
 goi = c("SETBP1","SET", "PP2A", "FOXP2")
 
@@ -847,13 +953,13 @@ for (i in 1:7) {
   
   tmp_dds = get(paste0("res", i))
   
-  #remove genes that could not be evaluated
+  # remove genes which could not be evaluated
   tmp_subset = data.frame(gene = rownames(tmp_dds),
-                           tmp_dds,
-                           stringsAsFactors = F) %>%
-                           na.omit() %>%
-                           filter(padj<0.1) %>%
-                           arrange(desc(abs(log2FoldChange)))
+                          tmp_dds,
+                          stringsAsFactors = F) %>%
+                          na.omit() %>%
+                          filter(padj<0.1) %>%
+                          arrange(desc(abs(log2FoldChange)))
 
   top_6_DEGs = list(head(tmp_dds$symbol))[[1]]
   goi2 = c(goi, top_6_DEGs)
@@ -871,7 +977,6 @@ for (i in 1:7) {
       dev.off()
       
   }
-  
 }
 
 ```
