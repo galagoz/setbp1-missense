@@ -999,7 +999,7 @@ for (i in 1:7) {
                         value = -log10(tmp_dds$pvalue)*sign(tmp_dds$log2FoldChange))
   
   write.csv(tmp_list, 
-            file = paste0(deseq_outDir, "RRHO/list_", i, ".csv"),
+            file = paste0(deseq_outDir, "RRHO_sigDEgenes/list_", i, ".csv"),
             quote = F, row.names = F)
   
 }
@@ -1008,7 +1008,7 @@ for (i in 1:7) {
   for (j in  1:7) {
     if (j==4) next
     
-    tmp_list1 = read.csv(paste0(deseq_outDir, "RRHO/list_", j, ".csv"))
+    tmp_list1 = read.csv(paste0(deseq_outDir, "RRHO_sigDEgenes/list_", j, ".csv"))
     tmp_list1 = na.omit(tmp_list1) #remove the rows without a gene symbol
     tmp_list1 = tmp_list1[order(tmp_list1$element, -abs(tmp_list1$value)),] #remove the duplicate genes and keep the one with a larger DE
     tmp_list1 = tmp_list1[!duplicated(tmp_list1$element),]
@@ -1016,7 +1016,7 @@ for (i in 1:7) {
     for (k in  1:7) {
       if (k==4|k==j) next
       
-      tmp_list2 = read.csv(paste0(deseq_outDir, "RRHO/list_", k, ".csv"))
+      tmp_list2 = read.csv(paste0(deseq_outDir, "RRHO_sigDEgenes/list_", k, ".csv"))
       tmp_list2 = na.omit(tmp_list2)
       tmp_list2 = tmp_list2[order(tmp_list2$element, -abs(tmp_list2$value)),]
       tmp_list2 = tmp_list2[!duplicated(tmp_list2$element),]
