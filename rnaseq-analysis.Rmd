@@ -25,7 +25,9 @@ library(cowplot)
 library(topGO)
 library(VennDiagram)
 source("custom_plotPCA.R")
+library(GenomicFeatures)
 library(EnsDb.Hsapiens.v79)
+library(RRHO)
 ```
 
 ## 
@@ -41,15 +43,15 @@ list_of_bam2 = list.files(path = "/data/workspaces/lag/workspaces/lg-scrna/prima
 list_of_bam = c(list_of_bam1,list_of_bam2)
 
 # Create a count table
-rsubread.counts = featureCounts(list_of_bam,
-                                annot.ext="/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/20211123_setbp1_hdf_b2_rna/X201SC21072043-Z01-F002/ref/genome.gtf/genome.gtf",
-                                isGTFAnnotationFile = TRUE,
-                                GTF.featureType = "exon",
-                                GTF.attrType = "gene_id",
-                                useMetaFeatures = TRUE,
-                                allowMultiOverlap = FALSE,
-                                isPairedEnd = TRUE,
-                                requireBothEndsMapped = TRUE)
+# rsubread.counts = featureCounts(list_of_bam,
+#                                 annot.ext="/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/20211123_setbp1_hdf_b2_rna/X201SC21072043-Z01-F002/ref/genome.gtf/genome.gtf",
+#                                 isGTFAnnotationFile = TRUE,
+#                                 GTF.featureType = "exon",
+#                                 GTF.attrType = "gene_id",
+#                                 useMetaFeatures = TRUE,
+#                                 allowMultiOverlap = FALSE,
+#                                 isPairedEnd = TRUE,
+#                                 requireBothEndsMapped = TRUE)
 
 
 # Save the count table as an R object
@@ -70,8 +72,6 @@ inf = read.table("/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/
 #inf = read.table("/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/sample_name_condition_v2.txt", skipNul = T, header = T)
 ```
 
-## 
-
 ```{r prep4deseq}
 
 # Check the mean gene length
@@ -90,7 +90,7 @@ countdata = annot %>%
             dplyr::select(GeneID, Length) %>%
             inner_join(countdata) %>%
             mutate(Length = Length-150+1) %>%
-            filter(Length>1) # filter short genes
+            dplyr::filter(Length>1) # filter short genes
 
 # Now we divide first by the gene Length and then the colsums
 # This changes all numeric colums
@@ -216,23 +216,23 @@ meanSdPlot(vsdMat)
 nudge <- position_nudge(x = 2, y = 2)
 
 p1 = plotPCA.san(vsd, intgroup = "condition", ntop = 500) +
-  ggplot2::theme(legend.position = "top") +
-  geom_text_repel(aes(label = name), size = 2)
+  ggplot2::theme(legend.position = "top") #+
+  #geom_text_repel(aes(label = name), size = 2)
 
 p2 = plotPCA.san(vsd, intgroup = "batch", ntop = 500) +
-  ggplot2::theme(legend.position = "top") +
+  ggplot2::theme(legend.position = "top") #+
   #geom_text(aes(label = name), position = nudge)
-  geom_text_repel(aes(label = name), size = 2)
+  #geom_text_repel(aes(label = name), size = 2)
 
 p3 = plotPCA.san(vsd, intgroup = "sex", ntop = 500) +
-  ggplot2::theme(legend.position = "top") +
+  ggplot2::theme(legend.position = "top") #+
   #geom_text(aes(label = name), position = nudge)
-  geom_text_repel(aes(label = name), size = 2)
+  #geom_text_repel(aes(label = name), size = 2)
 
 p4 = plotPCA.san(vsd, intgroup = "age_at_sampling", ntop = 500) +
-  ggplot2::theme(legend.position = "top") +
+  ggplot2::theme(legend.position = "top") #+
   #geom_text(aes(label = name), position = nudge)
-  geom_text_repel(aes(label = name), size = 2)
+  #geom_text_repel(aes(label = name), size = 2)
 
 plot_grid(p1, p4, p3, p2, nrow = 2, ncol = 2)
 #ggsave(paste0(deseq_outDir, "PCA_4categories_v2.pdf"), width = 15, height = 10)
@@ -287,7 +287,7 @@ res5 = read.csv(paste0(deseq_outDir, "deseq_results/res_Outside_degronvsWithin_d
 #res6$symbol = mapIds(org.Hs.eg.db, keys=row.names(res6), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
 #write.csv(as.data.frame(res6), paste0(deseq_outDir,
 #                                     "deseq_results/res_within_degronSGSvstruncating.csv"), quote = F)
-res6 = read.csv(paste0(deseq_outDir, "deseq_results/res_within_degronSGSvstruncating..csv"), header = T)
+res6 = read.csv(paste0(deseq_outDir, "deseq_results/res_within_degronSGSvstruncating.csv"), header = T)
 
 ## Outside_degron vs. truncating
 #res7 = results(dds2, contrast = c("condition", "Outside_degron", "truncating"))
@@ -303,26 +303,26 @@ res7 = read.csv(paste0(deseq_outDir, "deseq_results/res_Outside_degronvstruncati
 
 # Plot and save volcanoplots
 
-pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsOutsideDegron.pdf"), width = 7, height = 8)
+#pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsOutsideDegron.pdf"), width = 7, height = 8)
 EnhancedVolcano(res1, lab = NA, x="log2FoldChange", y="padj",
                 xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
                 col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
                 gridlines.minor = FALSE, gridlines.major = FALSE)
-dev.off()
+#dev.off()
 
-pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsWithin_degronSGS.pdf"), width = 7, height = 8)
+#pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsWithin_degronSGS.pdf"), width = 7, height = 8)
 EnhancedVolcano(res2, lab = NA, x="log2FoldChange", y="padj",
                 xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
                 col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
                 gridlines.minor = FALSE, gridlines.major = FALSE)
-dev.off()
+#dev.off()
 
-pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsTruncating.pdf"), width = 7, height = 8)
+#pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsTruncating.pdf"), width = 7, height = 8)
 EnhancedVolcano(res3, lab = NA, x="log2FoldChange", y="padj",
                 xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
                 col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
                 gridlines.minor = FALSE, gridlines.major = FALSE)
-dev.off()
+#dev.off()
 
 #pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsOutside.pdf"), width = 7, height = 8)
 #EnhancedVolcano(res4, lab = NA, x="log2FoldChange", y="padj",
@@ -331,26 +331,26 @@ dev.off()
 #                gridlines.minor = FALSE, gridlines.major = FALSE, )
 #dev.off()
 
-pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-Outside_degronvsWithin_degronSGS.pdf"), width = 7, height = 8)
+#pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-Outside_degronvsWithin_degronSGS.pdf"), width = 7, height = 8)
 EnhancedVolcano(res5, lab = NA, x="log2FoldChange", y="padj",
                 xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
                 col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
                 gridlines.minor = FALSE, gridlines.major = FALSE)
-dev.off()
+#dev.off()
 
-pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-within_degronSGSvstruncating.pdf"), width = 7, height = 8)
+#pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-within_degronSGSvstruncating.pdf"), width = 7, height = 8)
 EnhancedVolcano(res6, lab = NA, x="log2FoldChange", y="padj",
                 xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
                 col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
                 gridlines.minor = FALSE, gridlines.major = FALSE)
-dev.off()
+#dev.off()
 
-pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-Outside_degronvstruncating.pdf"), width = 7, height = 8)
+#pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-Outside_degronvstruncating.pdf"), width = 7, height = 8)
 EnhancedVolcano(res7, lab = NA, x="log2FoldChange", y="padj",
                 xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
                 col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
                 gridlines.minor = FALSE, gridlines.major = FALSE)
-dev.off()
+#dev.off()
 
 ```
 
@@ -379,16 +379,16 @@ get_downregulated = function(df){
 for (i in 1:7) {
   if (i==4) next # skip ControlvsOutside
   up_list = get_upregulated(get(paste0("res", i)))
-  write.table(up_list, paste0(deseq_outDir,"sigDEgeneLists/sigUpRegulatedGenes_res", i, ".tab"),
-              quote = F, sep = "\t")
+  #write.table(up_list, paste0(deseq_outDir,"sigDEgeneLists/sigUpRegulatedGenes_res", i, ".tab"),
+  #            quote = F, sep = "\t")
   
   }
 
 for (i in 1:7) {
   if (i==4) next # skip ControlvsOutside
   down_list = get_downregulated(get(paste0("res", i)))
-  write.table(down_list, paste0(deseq_outDir,"sigDEgeneLists/sigDownRegulatedGenes_res", i, ".tab"),
-              quote = F, sep = "\t")
+  #write.table(down_list, paste0(deseq_outDir,"sigDEgeneLists/sigDownRegulatedGenes_res", i, ".tab"),
+  #            quote = F, sep = "\t")
   
   }
 
@@ -978,6 +978,54 @@ for (i in 1:7) {
       
   }
 }
+
+```
+
+```{r RRHO}
+
+# make lists for RRHO and save them as csv files
+for (i in 1:7) {
+  if (i==4) next
+  
+  tmp_dds = get(paste0("res", i))
+  
+  # remove genes which could not be evaluated
+  # tmp_subset = data.frame(tmp_dds,
+  #                         stringsAsFactors = F %>%
+  #                         )
+  
+  tmp_dds = tmp_dds[tmp_dds$padj<=0.05,] # here we get only sig DEs 
+  tmp_list = data.frame(element = tmp_dds$symbol,
+                        value = -log10(tmp_dds$pvalue)*sign(tmp_dds$log2FoldChange))
+  
+  write.csv(tmp_list, 
+            file = paste0(deseq_outDir, "RRHO/list_", i, ".csv"),
+            quote = F, row.names = F)
+  
+}
+
+# run RRHO for each list pair
+  for (j in  1:7) {
+    if (j==4) next
+    
+    tmp_list1 = read.csv(paste0(deseq_outDir, "RRHO/list_", j, ".csv"))
+    tmp_list1 = na.omit(tmp_list1) #remove the rows without a gene symbol
+    tmp_list1 = tmp_list1[order(tmp_list1$element, -abs(tmp_list1$value)),] #remove the duplicate genes and keep the one with a larger DE
+    tmp_list1 = tmp_list1[!duplicated(tmp_list1$element),]
+    
+    for (k in  1:7) {
+      if (k==4|k==j) next
+      
+      tmp_list2 = read.csv(paste0(deseq_outDir, "RRHO/list_", k, ".csv"))
+      tmp_list2 = na.omit(tmp_list2)
+      tmp_list2 = tmp_list2[order(tmp_list2$element, -abs(tmp_list2$value)),]
+      tmp_list2 = tmp_list2[!duplicated(tmp_list2$element),]
+      
+      RRHO(tmp_list1, tmp_list2, stepsize = 100, labels = (c(as.character(j),as.character(k))), alternative = "enrichment", #100 us recommended as the step size
+           plots = T, outputdir = paste0(deseq_outDir, "RRHO"), BY = T, log10.ind = T)
+      
+    }
+  }
 
 ```
 
