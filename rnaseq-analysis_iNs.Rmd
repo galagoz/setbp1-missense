@@ -1,0 +1,3655 @@
+---
+title: "bulk-rnaseq_setbp1"
+author: "Gokberk Alagoz, Maggie Wong, L&G Dept., MPI for Psycholinguistics"
+date: "`r Sys.Date()`"
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Rsubread)
+library(biomaRt)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(DESeq2)
+library(vsn)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(circlize)
+library(cowplot)
+library(topGO)
+library(VennDiagram)
+library("ggbeeswarm")
+library(EnsDb.Hsapiens.v79)
+library(RRHO)
+library(RRHO2)
+library(umap)
+library(rrvgo) #reduce redundant GO term
+library(gridExtra)
+library(stats)  # for Fisher's exact test
+```
+
+## Rsubread and data preparation
+this part is for only plotting PCA including d0 samples
+```{r data_prep}
+#deseq_outDir = "/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/"
+
+if (Sys.info()['sysname']=='Windows') {dir="P://workspaces/"} else {dir="/data/workspaces/lag/workspaces/"}
+#deseq_outDir = paste(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/4_deseq2_allsamples_MW20250106/",sep="")
+#deseq_outDir = paste(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/4_deseq2_noOutlier_MW20250106/",sep="")
+deseq_outDir = paste(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/4_deseq2_noOutlier_noD0_MW20250107/1_condition/",sep="")
+
+#always save RData
+#save.image(file = paste0(dir, "lg-scrna/working_data/Maggie/working/script/bulk_rna_SETBP1_iNeuron/3_featureCounts_deseq2/setbp1_iN_rna_d10-12condition.RData"))
+
+# load the image
+load(file = paste0(dir, "lg-scrna/working_data/Maggie/working/script/bulk_rna_SETBP1_iNeuron/3_featureCounts_deseq2/setbp1_iN_rna_d10-12condition.RData"))
+
+# Read bam files
+list_of_bam1 = list.files(path = "/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/bulk_rna_SETBP1_iNeuron/X204SC24102861-Z01-F002_01/02.Bam", pattern = ".bam$", full.names = T)
+list_of_bam2 = list.files(path = "/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/bulk_rna_SETBP1_iNeuron/X204SC24102861-Z01-F002_04/02.Bam", pattern = ".bam$", full.names = T)
+list_of_bam3 = list.files(path = "/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/bulk_rna_SETBP1_iNeuron/X204SC24102861-Z01-F002_05/02.Bam", pattern = ".bam$", full.names = T)
+
+list_of_bam = c(list_of_bam1,list_of_bam2,list_of_bam3)
+
+# Create a count table
+rsubread.counts = featureCounts(list_of_bam,
+                               #annot.ext="/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/20211123_setbp1_hdf_b2_rna/X201SC21072043-Z01-F002/ref/genome.gtf/genome.gtf",
+                               annot.ext="/data/workspaces/lag/workspaces/lg-scrna/primary_data/maggie_data_release/bulk_rna_SETBP1_iNeuron/X204SC24102861-Z01-F002_01/04.Ref/genome.gtf",
+                               isGTFAnnotationFile = TRUE,
+                               GTF.featureType = "exon",
+                               GTF.attrType = "gene_id",
+                               useMetaFeatures = TRUE,
+                               allowMultiOverlap = FALSE,
+                               isPairedEnd = TRUE,
+                               requireBothEndsMapped = TRUE)
+
+# Save the count table as an R object
+save(rsubread.counts, file = "/data/workspaces/lag/workspaces/lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/3_featureCounts/rsubread.counts.RData")
+
+
+load(file = paste0(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/3_featureCounts/rsubread.counts.RData"))
+################################################
+
+# Get read counts per gene
+rcounts = rsubread.counts$counts
+# Get gene annotations
+annot = rsubread.counts$annotation
+
+head(rcounts)
+dim(rcounts)
+# there are 58,735 genes and 54 samples
+
+# Load the metadata of your samples
+inf = read.table(paste0(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/sample_name_condition_v1.csv"), skipNul = T, header = T, sep=",")
+
+
+```
+
+## prep for deseq2
+
+```{r prep4deseq}
+
+# Check the mean gene length
+summary(annot$Length)
+
+# Take out all transcripts that have no reads in any of the experiments
+rcounts = rcounts[(rowSums(rcounts)>0),]
+
+# Make countdata a dataframe
+countdata = data.frame(GeneID = rownames(rcounts), rcounts)
+
+# Add geneLength to annot
+# Here, 150 in mutate() function is the mean read length. I pulled out this number from multiqc results:
+# /data/workspaces/lag/workspaces/lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_HDF/multiqc/multiqc/Alignment_QC_Report_data.pdf
+countdata = annot %>%
+            dplyr::select(GeneID, Length) %>%
+            inner_join(countdata) %>%
+            mutate(Length = Length-150+1) %>%
+            dplyr::filter(Length>1) # filter short genes
+
+# Now we divide first by the gene Length and then the colsums
+# This changes all numeric colums
+# The dot refers to the current value
+tpm = countdata %>%
+      mutate_if(is.numeric,funs(rpk=./Length*1e3)) %>%
+      mutate_if(is.numeric,funs(tpm=./sum(.)*1e6)) %>%
+      # only want to keep the new columns
+      dplyr::select(GeneID, contains("rpk_tpm"), -Length_rpk_tpm)
+
+#change column names back
+names(tpm) = colnames(countdata)[-2]
+
+```
+
+# Check how comparable the TPMs are across samples
+
+```{r checkpoint_plot1}
+
+# Avoid having log(0) by simply adding the minimum TPM > 0 to each sample
+
+expMin = apply(tpm[,-1],2,function(x){min(x[x>0])})
+
+log_tpm = log10(t(tpm[,-1]) + expMin)
+
+# Transposing with t() made TPM a matrix,
+# Transpose back and revert to data.frame
+# Make long format
+
+tpm_long = data.frame(t(log_tpm)) %>%
+           gather(key= "SRR", value = "log10_TPM" )
+
+head(tpm_long)
+
+ggplot(tpm_long,aes(x=SRR,y=log10_TPM)) +
+       geom_boxplot() +
+       coord_flip() +
+       ylab(expression(log[10](TPM)))
+
+ggsave(paste0(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/4_deseq2_allsamples_MW20250106/tpm_boxplots/TPM_comparison_boxplots_v1.pdf"), width = 12, height = 20, units = "cm")
+
+```
+B7D10_2089 has very low tpm, remove?
+
+# Continue filtering before running DE analysis.
+
+```{r prep4deseq_part2}
+
+nrow(countdata)
+# There are still 42861 genes in our count table
+# Filter further to 1) get rid off zeros in the matrix and
+# improve normalization and 2) to filter out very lowly
+# expressed genes, cuz you can't detect differential
+# expression for those genes anyway.
+
+# Calculate how many genes are expressed in each sample
+tpm %>% summarise_if(is.numeric, funs(sum(.>=1)))
+number_genes_expressed = tpm %>% summarise_if(is.numeric, funs(sum(.>=1)))
+
+write.csv(number_genes_expressed, file =paste0(deseq_outDir, "number_genes_expressed.csv"))
+
+# Move geneIDs to rownames, remove that column
+rownames(tpm) = tpm[,1]
+tpm = tpm[,-1]
+
+# Condition only 10 samples are allowed to have a TPM < 1
+# Note that this 10 samples threshold is arbitrary.
+cut = dim(tpm)[2] - 10
+sum(apply(tpm, 1, function(x){sum(x>=1)>=cut}))
+# 12563 genes pass this threshold
+# So we reduced gene number from 42k to ~12k, success!
+# is this too harsh?
+
+# try another filter threshold
+# Filter genes with TPM ≥ 1 in at least 10% of samples, less stringent filtering
+cut2 <- 0.1 * ncol(tpm)  # 10% of samples
+sum(apply(tpm, 1, function(x){sum(x>=1)>=cut2}))
+# 18639 genes pass this threshold
+# will too many zeros affect the deseq2 results? there are some very lowly expressed genes
+
+# Condition only 20 samples are allowed to have a TPM < 1 so around half of the samples
+cut3 = dim(tpm)[2] - 20
+sum(apply(tpm, 1, function(x){sum(x>=1)>=cut3}))
+# 13620 genes pass this threshold
+# some less expressed genes are included but not too crazy
+
+# first try to go with cut2
+# do the actual filtering
+filt = tpm[apply(tpm, 1, function(x){sum(x>=1)>=cut2}),]
+tpm_filt_counts = rcounts[match(rownames(filt),rownames(rcounts)),]
+write.csv(tpm_filt_counts, file =paste0(deseq_outDir, "tpm_filt_counts.csv"))
+
+```
+B7D10_2089 has 12700 genes expressed, similar to others
+first try to go with cut2, 18639 genes pass this threshold
+
+# Run differential expression analysis with "DESeq2".
+## for all samples inclduing d0 for PCA
+https://master.bioconductor.org/packages/release/workflows/vignettes/rnaseqGene/inst/doc/rnaseqGene.html#introduction
+```{r DEanalysis-part1-1}
+
+head(inf)
+
+# Make sure that the IDs in the info table have
+# the same order as the columns in the count table
+rownames(inf) = inf$ID # make ID rownames
+colnames(rcounts) = str_replace(colnames(rcounts), ".bam", "") # remove ".bam" from colnames
+colnames(tpm_filt_counts) = str_replace(colnames(tpm_filt_counts), ".bam", "") # remove ".bam" from colnames
+tpm_filt_counts = tpm_filt_counts[, rownames(inf)] # order columns based on sample list in inf
+
+colnames(tpm_filt_counts) == rownames(inf) # check if it worked (all should be TRUE, yes)
+colnames(tpm_filt_counts) = inf$ID # make IDs in info as colnames of filtered counts, data still the same
+rownames(inf) = inf$ID # make IDs back to rowname
+colnames(tpm_filt_counts) == rownames(inf) # check if it worked (all should be TRUE, yes, hope everything is fine)
+
+nrow(tpm_filt_counts)
+#[1] 18639
+
+inf$sex <- factor(inf$sex)
+inf$batch <- factor(inf$batch)
+inf$day <- factor(inf$day)
+inf$condition <- factor(inf$condition)
+inf$genotype <- factor(inf$genotype)
+
+# designs
+
+design1 = ~ sex + batch + day
+design2= ~ sex + batch + day + condition
+# d0 creates problem for day:condition so will first do design2 for the pca
+inf_subset <- inf[inf$day != "d0", ]
+design3 = ~ sex + batch + day + condition + condition:day
+
+# DESeq design without time-course for plotting PCA only
+dds = DESeqDataSetFromMatrix(countData = tpm_filt_counts,
+                             colData = inf,
+                             design = design2)
+
+design(dds)
+#~sex + batch + day + condition
+
+dds = estimateSizeFactors(dds)
+summary(sizeFactors(dds))
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.7025  0.9359  1.0069  1.0178  1.1045  1.4086 
+
+#saveRDS(dds, file="/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/deseq_results/dds_v2.rds")
+#readRDS(dds, file="/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/deseq_results/dds_v2.rds")
+saveRDS(dds, file =paste0(deseq_outDir,"/deseq_results/dds_allsamples_v1.rds"))
+#readRDS(dds, file =paste0(deseq_outDir,"/deseq_results/dds_allsamples_v1.rds"))
+
+vsd = varianceStabilizingTransformation(dds)
+
+# Remove batch effect only for visualization purpose.
+# Important Note: DESeq2 takes raw count numbers as input, and
+# models batch effect. Thus, DE gene lists are not affected
+# by this removeBatchEffect step.
+# See what Mike Love says here: https://support.bioconductor.org/p/104290/
+# assay(vsd) <- limma::removeBatchEffect(assay(vsd), vsd$batch)
+# plotPCA(vsd, "batch")
+
+# this is for removng batch effects and covariate effect
+design <- model.matrix(~ sex + batch + age_at_sampling + day + condition, data = as.data.frame(colData(vsd)))
+assay(vsd) <- limma::removeBatchEffect(assay(vsd), vsd$batch, design = design)
+
+# Extract a matrix of normalized counts from the S4 object vsd
+vsdMat = assay(vsd)
+
+pdf(paste0(deseq_outDir, "/SDplots/tpm.pdf"), width = 7, height = 8)
+meanSdPlot(as.matrix(tpm))
+dev.off()
+
+pdf(paste0(deseq_outDir, "/SDplots/log_tpm.pdf"), width = 7, height = 8)
+meanSdPlot(t(log_tpm))
+dev.off()
+
+pdf(paste0(deseq_outDir, "/SDplots/vsdMat.pdf"), width = 7, height = 8)
+meanSdPlot(vsdMat)
+dev.off()
+
+# PCA using the 500 most variable genes from the variance-stabilized data
+#nudge <- position_nudge(x = 2, y = 2)
+desired_order_genotype <- c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13")
+desired_order_condition <- c("Control", "Within_degron", "Outside_degron", "Truncating")
+desired_order_ageAtSampling <- c("kid", "teenager", "adult")
+
+vsd$genotype <- factor(vsd$genotype, levels = desired_order_genotype)
+vsd$condition <- factor(vsd$condition, levels = desired_order_condition)
+vsd$ageAtSampleing <- factor(vsd$condition, levels = desired_order_ageAtSampling )
+
+#colour_genotype <- c("purple", "green", "blue", "orange")
+#names(colour_genotype) <- levels(vsd$genotype)
+
+p1 = plotPCA(vsd, intgroup = "condition", ntop = 500) +
+  ggplot2::theme(legend.position = "top") + 
+  geom_text_repel(aes(label = name), size = 2, max.overlaps = 50) +
+  geom_point(size=0.1)
+
+
+p2 = plotPCA(vsd, intgroup = "batch", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p3 = plotPCA(vsd, intgroup = "sex", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+    #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p4 = plotPCA(vsd, intgroup = "age_at_sampling", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p5 = plotPCA(vsd, intgroup = "day", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p6 = plotPCA(vsd, intgroup = "genotype", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1) #+ 
+  #scale_colour_manual(values = colour_genotype)
+
+pdf(paste0(deseq_outDir, "PCA/PCA_4var_allsamples.pdf"), width = 20, height = 30)
+plot_grid(p1, p4, p3, p2, p5, p6, nrow = 3, ncol = 2)
+dev.off()
+
+```
+3 samples were not clustering with the rest so going to remove them
+B8D10_1223
+B7D12_1225 
+B7D12_1223
+the last two seems to be swapped but to be safe, will remove both
+
+```{r DEanalysis-part1-2}
+
+head(inf)
+
+# # Make sure that the IDs in the info table have
+# # the same order as the columns in the count table
+# rownames(inf) = inf$ID # make ID rownames
+# colnames(rcounts) = str_replace(colnames(rcounts), ".bam", "") # remove ".bam" from colnames
+# colnames(tpm_filt_counts) = str_replace(colnames(tpm_filt_counts), ".bam", "") # remove ".bam" from colnames
+# tpm_filt_counts = tpm_filt_counts[, rownames(inf)] # order columns based on sample list in inf
+# 
+# colnames(tpm_filt_counts) == rownames(inf) # check if it worked (all should be TRUE, yes)
+# colnames(tpm_filt_counts) = inf$ID # make IDs in info as colnames of filtered counts, data still the same
+# rownames(inf) = inf$ID # make IDs back to rowname
+# colnames(tpm_filt_counts) == rownames(inf) # check if it worked (all should be TRUE, yes, hope everything is fine)
+# 
+# nrow(tpm_filt_counts)
+# #[1] 18639
+# 
+# inf$sex <- factor(inf$sex)
+# inf$batch <- factor(inf$batch)
+# inf$day <- factor(inf$day)
+# inf$condition <- factor(inf$condition)
+# inf$genotype <- factor(inf$genotype)
+
+# designs
+design1 = ~ sex + batch + day
+design2= ~ sex + batch + day + condition
+design3 = ~ sex + batch + day + condition + condition:day
+
+# remove samples that are outlier
+exclude_ids <- c("B8D10_1223", "B7D12_1225", "B7D12_1223")
+inf_noOutlier <- inf[!inf$ID %in% exclude_ids, ]
+#51 samples left
+
+# # remove d0 for the rest of deseq2
+# inf_noOutlier_noD0 <- inf_noOutlier[inf_noOutlier$day != "d0", ]
+
+# remove outlier from the tpm_filt_counts
+# Subset tpm_filt_counts to match the IDs in inf_subset
+tpm_filt_counts_noOutlier <- tpm_filt_counts[, colnames(tpm_filt_counts) %in% inf_noOutlier$ID]
+
+# Ensure the column order of tpm_filt_counts matches inf_subset
+tpm_filt_counts_noOutlier <- tpm_filt_counts_noOutlier[, match(inf_noOutlier$ID, colnames(tpm_filt_counts_noOutlier))]
+head(tpm_filt_counts_noOutlier)
+dim(tpm_filt_counts_noOutlier)
+#[1] 18639    51
+write.csv(tpm_filt_counts_noOutlier, file =paste0(deseq_outDir, "tpm_filt_counts_noOutlier.csv"))
+
+
+# DESeq design without time-course because two timepoints are very similar
+dds1 = DESeqDataSetFromMatrix(countData = tpm_filt_counts_noOutlier,
+                             colData = inf_noOutlier,
+                             design = design2)
+
+design(dds1)
+#~sex + batch + day + condition
+
+dds1 = estimateSizeFactors(dds1)
+summary(sizeFactors(dds1))
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#  0.6986  0.9402  1.0032  1.0177  1.1037  1.4019 
+
+# new deseq_outDir since removed outliers
+#deseq_outDir = paste(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/4_deseq2_noOutlier_MW20250106/",sep="")
+
+#saveRDS(dds, file="/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/deseq_results/dds_v2.rds")
+#readRDS(dds, file="/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/deseq_results/dds_v2.rds")
+saveRDS(dds1, file =paste0(deseq_outDir,"/deseq_results/dds_noOutlier_v1.rds"))
+#readRDS(dds1, file =paste0(deseq_outDir,"/deseq_results/dds_noOutlier_v1.rds"))
+
+#plotDispEsts(dds) # doesn't work after adding age_at_sampling to the model, not sure why
+
+vsd = varianceStabilizingTransformation(dds1)
+
+# Remove batch effect only for visualization purpose.
+# Important Note: DESeq2 takes raw count numbers as input, and
+# models batch effect. Thus, DE gene lists are not affected
+# by this removeBatchEffect step.
+# See what Mike Love says here: https://support.bioconductor.org/p/104290/
+# assay(vsd) <- limma::removeBatchEffect(assay(vsd), vsd$batch)
+#plotPCA(vsd, "batch")
+
+# this is for removng batch effects and covariate effect
+design <- model.matrix(~ sex + batch + age_at_sampling + day + condition, data = as.data.frame(colData(vsd)))
+assay(vsd) <- limma::removeBatchEffect(assay(vsd), vsd$batch, design = design)
+
+
+# Extract a matrix of normalized counts from the S4 object vsd
+vsdMat = assay(vsd)
+
+pdf(paste0(deseq_outDir, "/SDplots/tpm.pdf"), width = 7, height = 8)
+meanSdPlot(as.matrix(tpm))
+dev.off()
+
+pdf(paste0(deseq_outDir, "/SDplots/log_tpm.pdf"), width = 7, height = 8)
+meanSdPlot(t(log_tpm))
+dev.off()
+
+pdf(paste0(deseq_outDir, "/SDplots/vsdMat.pdf"), width = 7, height = 8)
+meanSdPlot(vsdMat)
+dev.off()
+
+# PCA using the 500 most variable genes from the variance-stabilized data
+#nudge <- position_nudge(x = 2, y = 2)
+desired_order_genotype <- c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13")
+desired_order_condition <- c("Control", "Within_degron", "Outside_degron", "Truncating")
+desired_order_ageAtSampling <- c("kid", "teenager", "adult")
+
+vsd$genotype <- factor(vsd$genotype, levels = desired_order_genotype)
+vsd$condition <- factor(vsd$condition, levels = desired_order_condition)
+vsd$ageAtSampleing <- factor(vsd$condition, levels = desired_order_ageAtSampling )
+
+#colour_genotype <- c("purple", "green", "blue", "orange")
+#names(colour_genotype) <- levels(vsd$genotype)
+
+# no labels
+p1 = plotPCA(vsd, intgroup = "condition", ntop = 500) +
+  ggplot2::theme(legend.position = "top") + 
+  #geom_text_repel(aes(label = name), size = 2, max.overlaps = 50) +
+  geom_point(size=0.1)
+
+
+p2 = plotPCA(vsd, intgroup = "batch", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p3 = plotPCA(vsd, intgroup = "sex", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+    #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p4 = plotPCA(vsd, intgroup = "age_at_sampling", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p5 = plotPCA(vsd, intgroup = "day", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p6 = plotPCA(vsd, intgroup = "genotype", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1) #+ 
+  #scale_colour_manual(values = colour_genotype)
+
+pdf(paste0(deseq_outDir, "PCA/PCA_6var_noOutlier_noLabel.pdf"), width = 14, height = 16)
+plot_grid(p1, p4, p3, p2, p5, p6, nrow = 3, ncol = 2)
+dev.off()
+
+# with labels
+p1 = plotPCA(vsd, intgroup = "condition", ntop = 500) +
+  ggplot2::theme(legend.position = "top") + 
+  geom_text_repel(aes(label = name), size = 2, max.overlaps = 50) +
+  geom_point(size=0.1)
+
+
+p2 = plotPCA(vsd, intgroup = "batch", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p3 = plotPCA(vsd, intgroup = "sex", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p4 = plotPCA(vsd, intgroup = "age_at_sampling", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p5 = plotPCA(vsd, intgroup = "day", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p6 = plotPCA(vsd, intgroup = "genotype", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1) #+ 
+  #scale_colour_manual(values = colour_genotype)
+
+pdf(paste0(deseq_outDir, "PCA/PCA_6var_noOutlier_labels.pdf"), width = 20, height = 30)
+plot_grid(p1, p4, p3, p2, p5, p6, nrow = 3, ncol = 2)
+dev.off()
+
+
+# plot_grid(p1, p4, p3, p2, nrow = 2, ncol = 2)
+# ggsave(paste0(deseq_outDir, "/PCA/PCA_4categories_v3_label.pdf"), width = 15, height = 10)
+
+# plot umap to see the relationships better
+# plot with the vsdMat matrix (contains the variance-stabilized, batch-effect-corrected normalized counts.)
+# transpose data since umap needssamples as rows and features (genes) as columns
+umap_input <- t(vsdMat)
+
+# Run UMAP
+set.seed(42)  # For reproducibility
+umap_results <- umap(umap_input)
+
+# Convert UMAP results to a data frame
+umap_df <- as.data.frame(umap_results$layout)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+
+# Add sample metadata (from `inf_noOutlier`)
+umap_df$sample <- rownames(umap_df)
+umap_df <- cbind(umap_df, inf_noOutlier)
+
+# plot umap with labels
+a1=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = day)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Day"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a2=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = genotype)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Genotype"    # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15, 3, 4, 8, 6),  # Shapes for each genotype
+    breaks = c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13"),
+    labels = c("WT", "D868N", "I871T", "E858K", "T962del", "K693Pfs*86", "I822Y_fs*13")
+  ) +
+  theme(legend.position = "right")
+
+a3=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = genotype, shape = condition)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Genotype",  # Custom label for the color legend
+    shape = "Condition"  # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("WT" = "azure4", 
+               "D868N" = "orange", 
+               "I871T" = "darkorange4", 
+               "E858K" = "deepskyblue", 
+               "T962del" = "chartreuse2", 
+               "K693P_fs*86" = "darkorchid1", 
+               "I822Y_fs*13" = "darkorchid4"),
+    breaks = c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13"),
+    labels = c("WT", "D868N", "I871T", "E858K", "T962del", "K693Pfs*86", "I822Yfs*13")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15, 8),  # Shapes for each condition
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+
+
+a4=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = sex)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Sex"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a5=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = batch)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Batch"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a6=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = age_at_sampling)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Age at sampling"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15),  # Shapes for each condition
+    breaks = c("kid", "teenager", "adult"),
+    labels = c("Kid", "Teenager", "Adult")
+  ) +
+  theme(legend.position = "right")
+
+pdf(paste0(deseq_outDir, "UMAP/UMAP_6var_noOutlier_labels.pdf"), width = 20, height = 20)
+plot_grid(a1,a2,a3,a4,a5,a6, nrow = 3, ncol = 2)
+dev.off()
+
+# plot umap without labels
+a1=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = day)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Day"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a2=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = genotype)) +
+  geom_point(size = 3) +
+ # geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Genotype"    # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15, 3, 4, 8, 6),  # Shapes for each genotype
+    breaks = c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13"),
+    labels = c("WT", "D868N", "I871T", "E858K", "T962del", "K693Pfs*86", "I822Y_fs*13")
+  ) +
+  theme(legend.position = "right")
+
+a3=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = genotype, shape = condition)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Genotype",  # Custom label for the color legend
+    shape = "Condition"  # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("WT" = "azure4", 
+               "D868N" = "orange", 
+               "I871T" = "darkorange4", 
+               "E858K" = "deepskyblue", 
+               "T962del" = "chartreuse2", 
+               "K693P_fs*86" = "darkorchid1", 
+               "I822Y_fs*13" = "darkorchid4"),
+    breaks = c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13"),
+    labels = c("WT", "D868N", "I871T", "E858K", "T962del", "K693Pfs*86", "I822Yfs*13")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15, 8),  # Shapes for each condition
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+
+
+a4=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = sex)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Sex"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a5=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = batch)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Batch"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a6=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = age_at_sampling)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Age at sampling"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15),  # Shapes for each condition
+    breaks = c("kid", "teenager", "adult"),
+    labels = c("Kid", "Teenager", "Adult")
+  ) +
+  theme(legend.position = "right")
+
+pdf(paste0(deseq_outDir, "UMAP/UMAP_6var_noOutlier_nolabel.pdf"), width = 10, height = 10)
+plot_grid(a1,a2,a3,a4,a5,a6, nrow = 3, ncol = 2)
+dev.off()
+
+```
+look okay after removing outliers
+continue to remove d0 then do deseq2 comparing condition
+```{r DEanalysis-part1-3}
+# new deseq_outDir since removed outliers and d0
+deseq_outDir = paste(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/4_deseq2_noOutlier_noD0_MW20250107/1_condition/",sep="")
+
+head(inf)
+
+# # Make sure that the IDs in the info table have
+# # the same order as the columns in the count table
+# rownames(inf) = inf$ID # make ID rownames
+# colnames(rcounts) = str_replace(colnames(rcounts), ".bam", "") # remove ".bam" from colnames
+# colnames(tpm_filt_counts) = str_replace(colnames(tpm_filt_counts), ".bam", "") # remove ".bam" from colnames
+# tpm_filt_counts = tpm_filt_counts[, rownames(inf)] # order columns based on sample list in inf
+# 
+# colnames(tpm_filt_counts) == rownames(inf) # check if it worked (all should be TRUE, yes)
+# colnames(tpm_filt_counts) = inf$ID # make IDs in info as colnames of filtered counts, data still the same
+# rownames(inf) = inf$ID # make IDs back to rowname
+# colnames(tpm_filt_counts) == rownames(inf) # check if it worked (all should be TRUE, yes, hope everything is fine)
+# 
+# nrow(tpm_filt_counts)
+# #[1] 18639
+# 
+# inf$sex <- factor(inf$sex)
+# inf$batch <- factor(inf$batch)
+# inf$day <- factor(inf$day)
+# inf$condition <- factor(inf$condition)
+# inf$genotype <- factor(inf$genotype)
+
+# designs
+design1 = ~ sex + batch + day
+design2= ~ sex + batch + day + condition
+design3 = ~ sex + batch + day + condition + condition:day
+
+# # remove samples that are outlier
+# exclude_ids <- c("B8D10_1223", "B7D12_1225", "B7D12_1223")
+# inf_noOutlier <- inf[!inf$ID %in% exclude_ids, ]
+# #51 samples left
+
+# remove d0 for the rest of deseq2
+inf_noOutlier_noD0 <- inf_noOutlier[inf_noOutlier$day != "d0", ]
+# 45 samples left
+
+# remove d0 from the tpm_filt_counts_noOutlier
+# Subset tpm_filt_counts to match the IDs in inf_noOutlier_noD0
+tpm_filt_counts_noOutlier_noD0 <- tpm_filt_counts[, colnames(tpm_filt_counts) %in% inf_noOutlier_noD0$ID]
+
+# Ensure the column order of tpm_filt_counts matches inf_subset
+tpm_filt_counts_noOutlier_noD0 <- tpm_filt_counts_noOutlier_noD0[, match(inf_noOutlier_noD0$ID, colnames(tpm_filt_counts_noOutlier_noD0))]
+head(tpm_filt_counts_noOutlier_noD0)
+dim(tpm_filt_counts_noOutlier_noD0)
+#[1] 18639    45
+write.csv(tpm_filt_counts_noOutlier_noD0, file =paste0(deseq_outDir, "tpm_filt_counts_noOutlier_noD0.csv"))
+
+
+# DESeq design without time-course because two timepoints are very similar
+dds3 = DESeqDataSetFromMatrix(countData = tpm_filt_counts_noOutlier_noD0,
+                             colData = inf_noOutlier_noD0,
+                             design = design2)
+
+design(dds3)
+#~sex + batch + day + condition
+
+dds3 = estimateSizeFactors(dds3)
+summary(sizeFactors(dds3))
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#  0.7145  0.9245  0.9997  1.0159  1.0934  1.4351 
+
+
+#saveRDS(dds, file="/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/deseq_results/dds_v2.rds")
+#readRDS(dds, file="/data/workspaces/lag/workspaces/lg-scrna/working_data/gokberk/setbp1/results/DESeq/deseq_results/dds_v2.rds")
+#saveRDS(dds1, file =paste0(deseq_outDir,"/deseq_results/dds_noOutlier_v1.rds"))
+#readRDS(dds1, file =paste0(deseq_outDir,"/deseq_results/dds_noOutlier_v1.rds"))
+saveRDS(dds3, file =paste0(deseq_outDir,"/deseq_results/dds_noOutlier_noD0_v1.rds"))
+#readRDS(dds3, file =paste0(deseq_outDir,"/deseq_results/dds_noOutlier_noD0_v1.rds"))
+
+#plotDispEsts(dds) # doesn't work after adding age_at_sampling to the model, not sure why
+
+vsd = varianceStabilizingTransformation(dds3)
+
+# Remove batch effect only for visualization purpose.
+# Important Note: DESeq2 takes raw count numbers as input, and
+# models batch effect. Thus, DE gene lists are not affected
+# by this removeBatchEffect step.
+# See what Mike Love says here: https://support.bioconductor.org/p/104290/
+# assay(vsd) <- limma::removeBatchEffect(assay(vsd), vsd$batch)
+# plotPCA(vsd, "batch")
+
+# this is for removng batch effects and covariate effect
+design <- model.matrix(~ sex + batch + age_at_sampling + day + condition, data = as.data.frame(colData(vsd)))
+assay(vsd) <- limma::removeBatchEffect(assay(vsd), vsd$batch, design = design)
+# doesnt seem to differ a lot with different covariates so there is likely something that we don't know about
+
+# Extract a matrix of normalized counts from the S4 object vsd
+vsdMat = assay(vsd)
+
+pdf(paste0(deseq_outDir, "/SDplots/tpm.pdf"), width = 7, height = 8)
+meanSdPlot(as.matrix(tpm))
+dev.off()
+
+pdf(paste0(deseq_outDir, "/SDplots/log_tpm.pdf"), width = 7, height = 8)
+meanSdPlot(t(log_tpm))
+dev.off()
+
+pdf(paste0(deseq_outDir, "/SDplots/vsdMat.pdf"), width = 7, height = 8)
+meanSdPlot(vsdMat)
+dev.off()
+
+# PCA using the 500 most variable genes from the variance-stabilized data
+#nudge <- position_nudge(x = 2, y = 2)
+desired_order_genotype <- c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13")
+desired_order_condition <- c("Control", "Within_degron", "Outside_degron", "Truncating")
+desired_order_ageAtSampling <- c("kid", "teenager", "adult")
+
+vsd$genotype <- factor(vsd$genotype, levels = desired_order_genotype)
+vsd$condition <- factor(vsd$condition, levels = desired_order_condition)
+vsd$ageAtSampleing <- factor(vsd$condition, levels = desired_order_ageAtSampling )
+
+#colour_genotype <- c("purple", "green", "blue", "orange")
+#names(colour_genotype) <- levels(vsd$genotype)
+
+# no labels
+p1 = plotPCA(vsd, intgroup = "condition", ntop = 500) +
+  ggplot2::theme(legend.position = "top") + 
+  #geom_text_repel(aes(label = name), size = 2, max.overlaps = 50) +
+  geom_point(size=0.1)
+
+
+p2 = plotPCA(vsd, intgroup = "batch", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p3 = plotPCA(vsd, intgroup = "sex", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+    #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p4 = plotPCA(vsd, intgroup = "age_at_sampling", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p5 = plotPCA(vsd, intgroup = "day", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p6 = plotPCA(vsd, intgroup = "genotype", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  #geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1) #+ 
+  #scale_colour_manual(values = colour_genotype)
+
+pdf(paste0(deseq_outDir, "PCA/PCA_6var_noOutlierNoD0_noLabel.pdf"), width = 14, height = 16)
+plot_grid(p1, p4, p3, p2, p5, p6, nrow = 3, ncol = 2)
+dev.off()
+
+# with labels
+p1 = plotPCA(vsd, intgroup = "condition", ntop = 500) +
+  ggplot2::theme(legend.position = "top") + 
+  geom_text_repel(aes(label = name), size = 2, max.overlaps = 50) +
+  geom_point(size=0.1)
+
+
+p2 = plotPCA(vsd, intgroup = "batch", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p3 = plotPCA(vsd, intgroup = "sex", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p4 = plotPCA(vsd, intgroup = "age_at_sampling", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p5 = plotPCA(vsd, intgroup = "day", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1)
+
+p6 = plotPCA(vsd, intgroup = "genotype", ntop = 500) +
+  ggplot2::theme(legend.position = "top") +
+  geom_text_repel(aes(label = name), size = 2) +
+  geom_point(size=0.1) #+ 
+  #scale_colour_manual(values = colour_genotype)
+
+pdf(paste0(deseq_outDir, "PCA/PCA_6var_noOutlierNoD0_labels.pdf"), width = 20, height = 30)
+plot_grid(p1, p4, p3, p2, p5, p6, nrow = 3, ncol = 2)
+dev.off()
+
+
+# plot_grid(p1, p4, p3, p2, nrow = 2, ncol = 2)
+# ggsave(paste0(deseq_outDir, "/PCA/PCA_4categories_v3_label.pdf"), width = 15, height = 10)
+
+# plot umap to see the relationships better
+# plot with the vsdMat matrix (contains the variance-stabilized, batch-effect-corrected normalized counts.)
+# transpose data since umap needssamples as rows and features (genes) as columns
+umap_input <- t(vsdMat)
+
+# Run UMAP
+set.seed(42)  # For reproducibility
+umap_results <- umap(umap_input)
+
+# Convert UMAP results to a data frame
+umap_df <- as.data.frame(umap_results$layout)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+
+# Add sample metadata (from `inf_noOutlier_noD0`)
+umap_df$sample <- rownames(umap_df)
+umap_df <- cbind(umap_df, inf_noOutlier_noD0)
+
+# plot umap with labels
+a1=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = day)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Day"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a2=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = genotype)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Genotype"    # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15, 3, 4, 8, 6),  # Shapes for each genotype
+    breaks = c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13"),
+    labels = c("WT", "D868N", "I871T", "E858K", "T962del", "K693Pfs*86", "I822Y_fs*13")
+  ) +
+  theme(legend.position = "right")
+
+a3=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = genotype, shape = condition)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Genotype",  # Custom label for the color legend
+    shape = "Condition"  # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("WT" = "azure4", 
+               "D868N" = "orange", 
+               "I871T" = "darkorange4", 
+               "E858K" = "deepskyblue", 
+               "T962del" = "chartreuse2", 
+               "K693P_fs*86" = "darkorchid1", 
+               "I822Y_fs*13" = "darkorchid4"),
+    breaks = c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13"),
+    labels = c("WT", "D868N", "I871T", "E858K", "T962del", "K693Pfs*86", "I822Yfs*13")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15, 8),  # Shapes for each condition
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+
+
+a4=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = sex)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Sex"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a5=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = batch)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Batch"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a6=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = age_at_sampling)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Age at sampling"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15),  # Shapes for each condition
+    breaks = c("kid", "teenager", "adult"),
+    labels = c("Kid", "Teenager", "Adult")
+  ) +
+  theme(legend.position = "right")
+
+pdf(paste0(deseq_outDir, "UMAP/UMAP_6var_noOutlierNoD0_labels.pdf"), width = 20, height = 20)
+plot_grid(a1,a2,a3,a4,a5,a6, nrow = 3, ncol = 2)
+dev.off()
+
+# plot umap without labels
+a1=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = day)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Day"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a2=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = genotype)) +
+  geom_point(size = 3) +
+ # geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Genotype"    # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15, 3, 4, 8, 6),  # Shapes for each genotype
+    breaks = c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13"),
+    labels = c("WT", "D868N", "I871T", "E858K", "T962del", "K693Pfs*86", "I822Y_fs*13")
+  ) +
+  theme(legend.position = "right")
+
+a3=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = genotype, shape = condition)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Genotype",  # Custom label for the color legend
+    shape = "Condition"  # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("WT" = "azure4", 
+               "D868N" = "orange", 
+               "I871T" = "darkorange4", 
+               "E858K" = "deepskyblue", 
+               "T962del" = "chartreuse2", 
+               "K693P_fs*86" = "darkorchid1", 
+               "I822Y_fs*13" = "darkorchid4"),
+    breaks = c("WT", "D868N", "I871T", "E858K", "T962del", "K693P_fs*86", "I822Y_fs*13"),
+    labels = c("WT", "D868N", "I871T", "E858K", "T962del", "K693Pfs*86", "I822Yfs*13")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15, 8),  # Shapes for each condition
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+
+
+a4=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = sex)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Sex"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a5=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = batch)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Batch"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  theme(legend.position = "right")
+
+a6=ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = condition, shape = age_at_sampling)) +
+  geom_point(size = 3) +
+  #geom_text_repel(aes(label = ID), size = 2, max.overlaps = 100) +  # Add sample names
+  #theme_minimal() +
+  theme_grey() +
+  labs(
+    title = "UMAP of Variance-Stabilized Counts",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Condition",  # Custom label for the color legend
+    shape = "Age at sampling"         # Custom label for the shape legend
+  ) +
+  scale_color_manual(
+    values = c("Control" = "azure4", "Within_degron" = "orange", 
+               "Outside_degron" = "deepskyblue", "Truncating" = "darkorchid1"),
+    breaks = c("Control", "Within_degron", "Outside_degron", "Truncating"),
+    labels = c("Control", "Within degron", "Outside degron", "Truncating")
+  ) +
+  scale_shape_manual(
+    values = c(16, 17, 15),  # Shapes for each condition
+    breaks = c("kid", "teenager", "adult"),
+    labels = c("Kid", "Teenager", "Adult")
+  ) +
+  theme(legend.position = "right")
+
+pdf(paste0(deseq_outDir, "UMAP/UMAP_6var_noOutlierNoD0_nolabel.pdf"), width = 10, height = 10)
+plot_grid(a1,a2,a3,a4,a5,a6, nrow = 3, ncol = 2)
+dev.off()
+
+```
+umap Show better relationship between samples
+include d0  control lines versus d10/12  control lines
+continue  with dss3
+
+```{r DEanalysis-part2}
+
+deseq_outDir = paste(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/4_deseq2_noOutlier_noD0_MW20250107/1_condition/",sep="")
+
+# Run DESeq for different combinations of conditions
+# to make volcano plots
+# continue with dds3 for only iNs
+#dds2 = DESeq(dds, betaPrior = FALSE)
+dds2 = DESeq(dds3, betaPrior = FALSE)
+saveRDS(dds2, file =paste0(deseq_outDir,"deseq_results/dds2_d10-12iN_only.rds"))
+#readRDS(dds2, file =paste0(deseq_outDir,"deseq_results/dds2_d10-12iN_only.rds"))
+
+# Control vs. Outside_degron
+res1 = results(dds2, contrast = c("condition", "Outside_degron", "Control"))
+res1 = lfcShrink(dds2, contrast = c("condition", "Outside_degron", "Control"), res=res1, type = "normal")
+res1$symbol = mapIds(org.Hs.eg.db, keys=row.names(res1), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+write.csv(as.data.frame(res1), paste0(deseq_outDir,
+                                     "/deseq_results/res_ControlvsOutsideDegron.csv"), quote = F)
+#removeNA
+res1_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_ControlvsOutsideDegron.csv"), header = T)
+res1_deseq_results_noNA = na.omit(res1_deseq_results)
+nrow(res1_deseq_results_noNA)
+write.csv(as.data.frame(res1_deseq_results_noNA), paste0(deseq_outDir,
+                                     "/deseq_results/res_ControlvsOutsideDegron_noNA.csv"), quote = F)
+saveRDS(res1, file =paste0(deseq_outDir,"deseq_results/res1_condition_ControlvsOutsideDegron.rds"))
+
+
+# Control vs. Within_degron
+res2 = results(dds2, contrast = c("condition", "Within_degron", "Control"))
+res2 = lfcShrink(dds2, contrast = c("condition", "Within_degron", "Control"), res=res2, type = "normal")
+res2$symbol = mapIds(org.Hs.eg.db, keys=row.names(res2), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+write.csv(as.data.frame(res2), paste0(deseq_outDir,
+                                     "/deseq_results/res_ControlvsWithin_degronSGS.csv"), quote = F)
+
+#removeNA
+res2_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_ControlvsWithin_degronSGS.csv"), header = T)
+res2_deseq_results_noNA = na.omit(res2_deseq_results)
+nrow(res2_deseq_results_noNA)
+write.csv(as.data.frame(res2_deseq_results_noNA), paste0(deseq_outDir,
+                                     "/deseq_results/res_ControlvsWithin_degronSGS_noNA.csv"), quote = F)
+saveRDS(res2, file =paste0(deseq_outDir,"deseq_results/res2_condition_ControlvsWithin_degronSGS.rds"))
+
+
+# Control vs. Truncating
+res3 = results(dds2, contrast = c("condition", "Truncating", "Control"))
+res3 = lfcShrink(dds2, contrast = c("condition", "Truncating", "Control"), res=res3, type = "normal")
+res3$symbol = mapIds(org.Hs.eg.db, keys=row.names(res3), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+write.csv(as.data.frame(res3), paste0(deseq_outDir,
+                                     "/deseq_results/res_ControlvsTruncating.csv"), quote = F)
+
+#removeNA
+res3_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_ControlvsTruncating.csv"), header = T)
+res3_deseq_results_noNA = na.omit(res3_deseq_results)
+nrow(res3_deseq_results_noNA)
+write.csv(as.data.frame(res3_deseq_results_noNA), paste0(deseq_outDir,
+                                     "/deseq_results/res_ControlvsTruncating_noNA.csv"), quote = F)
+saveRDS(res3, file =paste0(deseq_outDir,"deseq_results/res3_ControlvsTruncating.rds"))
+
+
+# # Control vs. Outside
+# res4 = results(dds2, contrast = c("condition", "Control", "Outside"))
+# res4 = lfcShrink(dds2, contrast = c("condition", "Control", "Outside"), res=res4, type = "normal")
+# res4$symbol = mapIds(org.Hs.eg.db, keys=row.names(res4), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+# write.csv(as.data.frame(res4), paste0(deseq_outDir,
+#                                     "/deseq_results/res_ControlvsOutside.csv"), quote = F)
+
+# Outside_degron vs. Within_degron
+res5 = results(dds2, contrast = c("condition", "Outside_degron", "Within_degron"))
+res5 = lfcShrink(dds2, contrast = c("condition", "Outside_degron", "Within_degron"), res=res5, type = "normal")
+res5$symbol = mapIds(org.Hs.eg.db, keys=row.names(res5), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+write.csv(as.data.frame(res5), paste0(deseq_outDir,
+                                     "/deseq_results/res_Outside_degronvsWithin_degronSGS.csv"), quote = F)
+
+#removeNA
+res5_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_Outside_degronvsWithin_degronSGS.csv"), header = T)
+res5_deseq_results_noNA = na.omit(res5_deseq_results)
+nrow(res5_deseq_results_noNA)
+write.csv(as.data.frame(res5_deseq_results_noNA), paste0(deseq_outDir,
+                                     "/deseq_results/res_Outside_degronvsWithin_degronSGS_noNA.csv"), quote = F)
+
+
+# Within_degron vs. truncating
+res6 = results(dds2, contrast = c("condition", "Within_degron", "Truncating"))
+res6 = lfcShrink(dds2, contrast = c("condition", "Within_degron", "Truncating"), res=res6, type = "normal")
+res6$symbol = mapIds(org.Hs.eg.db, keys=row.names(res6), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+write.csv(as.data.frame(res6), paste0(deseq_outDir,
+                                     "/deseq_results/res_within_degronSGSvstruncating.csv"), quote = F)
+
+#removeNA
+res6_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_within_degronSGSvstruncating.csv"), header = T)
+res6_deseq_results_noNA = na.omit(res6_deseq_results)
+nrow(res6_deseq_results_noNA)
+write.csv(as.data.frame(res6_deseq_results_noNA), paste0(deseq_outDir,
+                                     "/deseq_results/res_within_degronSGSvstruncating_noNA.csv"), quote = F)
+
+# Outside_degron vs. truncating
+res7 = results(dds2, contrast = c("condition", "Outside_degron", "Truncating"))
+res7 = lfcShrink(dds2, contrast = c("condition", "Outside_degron", "Truncating"), res=res7, type = "normal")
+res7$symbol = mapIds(org.Hs.eg.db, keys=row.names(res7), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+write.csv(as.data.frame(res7), paste0(deseq_outDir,
+                                     "/deseq_results/res_Outside_degronvstruncating.csv"), quote = F)
+
+#removeNA
+res7_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_Outside_degronvstruncating.csv"), header = T)
+res7_deseq_results_noNA = na.omit(res7_deseq_results)
+nrow(res7_deseq_results_noNA)
+write.csv(as.data.frame(res7_deseq_results_noNA), paste0(deseq_outDir,
+                                     "/deseq_results/res_Outside_degronvstruncating_noNA.csv"), quote = F)
+
+# [1] 14481 in noNA
+###################################################
+
+# # these are for when including d0 samples in another script
+# # d0 control vs d10/12 control
+# res8 = results(dds2, contrast = c("ID3", "control_d10/12", "control_d0"))
+# res8 = lfcShrink(dds2, contrast = c("ID3", "control_d10/12", "control_d0"), res=res8, type = "normal")
+# res8$symbol = mapIds(org.Hs.eg.db, keys=row.names(res8), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+# write.csv(as.data.frame(res8), paste0(deseq_outDir,
+#                                      "/deseq_results/res_d0controlvsd10-12control.csv"), quote = F)
+# 
+# #removeNA
+# res8_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_d0controlvsd10-12control.csv"), header = T)
+# res8_deseq_results_noNA = na.omit(res8_deseq_results)
+# nrow(res8_deseq_results_noNA)
+# #[1]  11819
+# write.csv(as.data.frame(res8_deseq_results_noNA), paste0(deseq_outDir,
+#                                      "/deseq_results/res_d0controlvsd10-12control_noNA.csv"), quote = F)
+# 
+# # d0 vs d10 controls
+# res9 = results(dds2, contrast = c("ID2", "control_d10", "control_d0"))
+# res9 = lfcShrink(dds2, contrast = c("ID2", "control_d10", "control_d0"), res=res9, type = "normal")
+# res9$symbol = mapIds(org.Hs.eg.db, keys=row.names(res9), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+# write.csv(as.data.frame(res9), paste0(deseq_outDir,
+#                                      "/deseq_results/res_d0controlvsd10control.csv"), quote = F)
+# 
+# #removeNA
+# res9_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_d0controlvsd10control.csv"), header = T)
+# res9_deseq_results_noNA = na.omit(res9_deseq_results)
+# nrow(res9_deseq_results_noNA)
+# #[1]  11819
+# write.csv(as.data.frame(res9_deseq_results_noNA), paste0(deseq_outDir,
+#                                      "/deseq_results/res_d0controlvsd10control_noNA.csv"), quote = F)
+# 
+# # d0 vs d12 controls
+# res10 = results(dds2, contrast = c("ID2", "control_d12", "control_d0"))
+# res10 = lfcShrink(dds2, contrast = c("ID2", "control_d12", "control_d0"), res=res10, type = "normal")
+# res10$symbol = mapIds(org.Hs.eg.db, keys=row.names(res10), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+# write.csv(as.data.frame(res10), paste0(deseq_outDir,
+#                                      "/deseq_results/res_d0controlvsd12control.csv"), quote = F)
+# 
+# #removeNA
+# res10_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_d0controlvsd12control.csv"), header = T)
+# res10_deseq_results_noNA = na.omit(res10_deseq_results)
+# nrow(res10_deseq_results_noNA)
+# #[1]  11819
+# write.csv(as.data.frame(res10_deseq_results_noNA), paste0(deseq_outDir,
+#                                      "/deseq_results/res_d0controlvsd12control_noNA.csv"), quote = F)
+# 
+# # d0 vs d12 controls
+# res11 = results(dds2, contrast = c("ID2", "control_d12", "control_d10"))
+# res11 = lfcShrink(dds2, contrast = c("ID2", "control_d12", "control_d10"), res=res11, type = "normal")
+# res11$symbol = mapIds(org.Hs.eg.db, keys=row.names(res11), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+# write.csv(as.data.frame(res11), paste0(deseq_outDir,
+#                                      "/deseq_results/res_d10controlvsd12control.csv"), quote = F)
+# 
+# #removeNA
+# res11_deseq_results = read.csv(paste0(deseq_outDir, "/deseq_results/res_d10controlvsd12control.csv"), header = T)
+# res11_deseq_results_noNA = na.omit(res11_deseq_results)
+# nrow(res11_deseq_results_noNA)
+# #[1]  11819
+# write.csv(as.data.frame(res11_deseq_results_noNA), paste0(deseq_outDir,
+#                                      "/deseq_results/res_d10controlvsd12control_noNA.csv"), quote = F)
+
+```
+
+
+```{r volcanoPlots}
+
+# Plot and save volcanoplots
+
+pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsOutsideDegron.pdf"), width = 7, height = 8)
+EnhancedVolcano(res1, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+
+pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsWithin_degronSGS.pdf"), width = 7, height = 8)
+EnhancedVolcano(res2, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+
+pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsTruncating.pdf"), width = 7, height = 8)
+EnhancedVolcano(res3, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+
+#pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-ControlvsOutside.pdf"), width = 7, height = 8)
+#EnhancedVolcano(res4, lab = NA, x="log2FoldChange", y="padj",
+#                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+#                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+#                gridlines.minor = FALSE, gridlines.major = FALSE, )
+#dev.off()
+
+pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-Outside_degronvsWithin_degronSGS.pdf"), width = 7, height = 8)
+EnhancedVolcano(res5, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+
+pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-within_degronSGSvstruncating.pdf"), width = 7, height = 8)
+EnhancedVolcano(res6, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+
+pdf(paste0(deseq_outDir, "volcanoPlots/Volcano-Outside_degronvstruncating.pdf"), width = 7, height = 8)
+EnhancedVolcano(res7, lab = NA, x="log2FoldChange", y="padj",
+                xlim = c(-2, 2), ylim = c(0,15), captionLabSize = 9,
+                col=c('grey75', 'grey50', 'grey25', 'red','blue'), pCutoff = 0.1, FCcutoff = 0.6,
+                gridlines.minor = FALSE, gridlines.major = FALSE)
+dev.off()
+
+
+```
+
+```{r getDEgeneCounts}
+
+get_upregulated = function(df){
+
+    df = as.data.frame(df)
+  
+    key = intersect(rownames(df)[which(df$log2FoldChange>=1)], rownames(df)[which(df$padj<=0.05)])
+
+    results = as.data.frame((df)[which(rownames(df) %in% key),])
+    return(results)
+}
+
+get_downregulated = function(df){
+
+    df = as.data.frame(df)
+  
+    key = intersect(rownames(df)[which(df$log2FoldChange<=-1)], rownames(df)[which(df$padj<=0.05)])
+
+    results = as.data.frame((df)[which(rownames(df) %in% key),])
+    return(results)
+}
+
+for (i in 1:7) {
+  if (i==4) next # skip ControlvsOutside
+  up_list = get_upregulated(get(paste0("res", i)))
+  write.table(up_list, paste0(deseq_outDir,"/sigDEgeneLists/sigUpRegulatedGenes_res", i, ".tab"),
+              quote = F, sep = "\t")
+  
+  }
+
+for (i in 1:7) {
+  if (i==4) next # skip ControlvsOutside
+  down_list = get_downregulated(get(paste0("res", i)))
+  write.table(down_list, paste0(deseq_outDir,"/sigDEgeneLists/sigDownRegulatedGenes_res", i, ".tab"),
+              quote = F, sep = "\t")
+  
+  }
+#check number of up- and down- regulated genes for each comparison
+
+for (i in 1:7) {
+  if (i==4) next # skip ControlvsOutside
+  summary_list = summary(get(paste0("res", i)))}
+
+  #write.table(summary_list, paste0(deseq_outDir,"/sigDEgeneLists/summary_res", i, ".tab"),
+ #             quote = F, sep = "\t")} #don't know why can't put in a table
+
+outside_in_up = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_res5.tab"), header = T)
+outside_in_down = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_res5.tab"), header = T)
+
+inside_truncating_up = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_res6.tab"), header = T)
+inside_truncating_down = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_res6.tab"), header = T)
+
+outside_truncating_up = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_res7.tab"), header = T)
+outside_truncating_down = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigDownRegulatedGenes_res7.tab"), header = T)
+
+################################################################
+# get all degs, sigup & sigdown genes (MW)
+get_all_degs = function(df) {
+    df = as.data.frame(df)
+    
+    # Remove rows with NA in log2FoldChange, padj, or symbol
+    df = df[!is.na(df$log2FoldChange) & !is.na(df$padj) & !is.na(df$symbol), ]
+    
+    # Get upregulated genes
+    up_key = intersect(rownames(df)[which(df$log2FoldChange >= 1)], rownames(df)[which(df$padj <= 0.05)])
+    up_results = as.data.frame(df[which(rownames(df) %in% up_key),])
+    
+    # Get downregulated genes
+    down_key = intersect(rownames(df)[which(df$log2FoldChange <= -1)], rownames(df)[which(df$padj <= 0.05)])
+    down_results = as.data.frame(df[which(rownames(df) %in% down_key),])
+    
+    # Combine results
+    all_results = rbind(up_results, down_results)
+    return(all_results)
+}
+
+# Loop to save results for all res objects as csv
+for (i in 1:7) {
+    if (i==4) next # skip ControlvsOutside
+
+    res_obj = get(paste0("res", i))
+    
+    # Get all DEGs
+    all_degs = get_all_degs(res_obj)
+    
+    # Write combined DEGs to CSV file
+    write.csv(all_degs, file = paste0(deseq_outDir, "sigDEgeneListsMW/res", i, "_sigAllDEGenes.csv"),
+              row.names = TRUE)
+    
+    # Optionally, save upregulated and downregulated separately
+    up_list = get_upregulated(res_obj)
+    write.csv(up_list, file = paste0(deseq_outDir, "sigDEgeneListsMW/res", i, "_sigUpRegulatedGenes.csv"),
+              row.names = TRUE)
+    
+    down_list = get_downregulated(res_obj)
+    write.csv(down_list, file = paste0(deseq_outDir, "sigDEgeneListsMW/res", i, "_sigDownRegulatedGenes.csv"),
+              row.names = TRUE)
+}
+
+# Loop to save results for all res objects as tab
+for (i in 1:7) {
+    if (i==4) next # skip ControlvsOutside
+
+    res_obj = get(paste0("res", i))
+    
+    # Get all DEGs
+    all_degs = get_all_degs(res_obj)
+    
+    # Write combined DEGs to file
+    write.table(all_degs, paste0(deseq_outDir, "sigDEgeneListsMW/res", i, "_sigAllDEGenes.tab"),
+                quote = FALSE, sep = "\t")
+    
+    # Optionally, save upregulated and downregulated separately
+    up_list = get_upregulated(res_obj)
+    write.table(up_list, paste0(deseq_outDir, "sigDEgeneListsMW/res", i, "_sigUpRegulatedGenes.tab"),
+                quote = FALSE, sep = "\t")
+    
+    down_list = get_downregulated(res_obj)
+    write.table(down_list, paste0(deseq_outDir, "sigDEgeneListsMW/res", i, "_sigDownRegulatedGenes.tab"),
+                quote = FALSE, sep = "\t")
+}
+
+#check number of up- and down- regulated genes for each comparison
+# Loop for summary statistics
+for (i in 1:7) {
+    if (i==4) next # skip ControlvsOutside
+
+  # Capture the output of summary() to a character vector
+  summary_output <- capture.output(summary(get(paste0("res", i))))
+  
+  # Write the captured output to a file
+  writeLines(summary_output, paste0(deseq_outDir, "sigDEgeneListsMW/res", i, "_summary.txt"))
+}
+
+```
+DESeq2 applies independent filtering during the results() step, based on the mean normalized counts of genes.
+This filtering ensures that low-information genes (e.g., genes with very low counts) are excluded from multiple testing correction.
+
+so no need to re-do filtering
+
+```{r heatmaps}
+
+# We can’t plot the entire data set, let’s just select the top 300 by padj
+# Get top 300 differentially expressed genes between Control and Outside_degron samples
+
+# First, add gene IDs as a column
+res1$geneIDs = rownames(res1)
+
+sigGenes_ControlvsOutside_degron = as.data.frame(res1) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+# We’ll use normalised expression values, so we’ll use the vst function -> Changed this, see below
+#plotDat_ControlvsOutside_degron <- vst(dds)[sigGenes_ControlvsOutside_degron,] %>% 
+#  assay()
+# Here we used Batch Effect Removed (with limma) vsd file to see heatmaps without batch effect
+plotDat_ControlvsOutside_degron <- vsd[sigGenes_ControlvsOutside_degron,] %>% 
+  assay()
+
+z.mat_ControlvsOutside_degron <- t(scale(t(plotDat_ControlvsOutside_degron), center=TRUE, scale=TRUE))
+
+myPalette <- c("royalblue3", "ivory", "orangered3")
+myRamp <- colorRamp2(c(-2, 0, 2), myPalette)
+
+colData(dds3)$condition <- factor(colData(dds3)$condition, levels = c("Control", "Within_degron", "Outside_degron", "Truncating"))
+
+ha = HeatmapAnnotation(df = colData(dds3)[,c("condition", "batch", "sex")],
+                        col = list(condition = c("Control" = "azure4",
+                                                 "Outside_degron"="deepskyblue", "Truncating" = "darkorchid1",
+                                                 "Within_degron" = "orange"),
+                                   batch = c("b6" = "lightblue", "b7" = "darkblue", "b8" = "blue"),
+                                   sex = c("M" = "orange4", "F" = "darkgreen")))
+
+pdf(file = paste0(deseq_outDir, "/heatmaps/heatmap_top300DEgenes_ControlvsOutside_degron_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_ControlvsOutside_degron, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+# Get top 300 differentially expressed genes between Control and Within_degron
+
+res2$geneIDs = rownames(res2)
+
+sigGenes_ControlvsWithin_degronSGS = as.data.frame(res2) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+#plotDat_ControlvsWithin_degronSGS <- vst(dds)[sigGenes_ControlvsWithin_degronSGS,] %>% 
+#  assay()
+plotDat_ControlvsWithin_degronSGS <- vsd[sigGenes_ControlvsWithin_degronSGS,] %>% 
+  assay()
+z.mat_ControlvsWithin_degronSGS <- t(scale(t(plotDat_ControlvsWithin_degronSGS), center=TRUE, scale=TRUE))
+
+pdf(file = paste0(deseq_outDir, "/heatmaps/heatmap_top300DEgenes_ControlvsWithin_degronSGS_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_ControlvsWithin_degronSGS, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+# Get top 300 differentially expressed genes between Control vs. Truncating
+
+res3$geneIDs = rownames(res3)
+
+sigGenes_ControlvsTruncating = as.data.frame(res3) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+#plotDat_ControlvsTruncating <- vst(dds)[sigGenes_ControlvsTruncating,] %>% 
+#  assay()
+plotDat_ControlvsTruncating <- vsd[sigGenes_ControlvsTruncating,] %>% 
+  assay()
+z.mat_ControlvsTruncating <- t(scale(t(plotDat_ControlvsTruncating), center=TRUE, scale=TRUE))
+
+pdf(file = paste0(deseq_outDir, "/heatmaps/heatmap_top300DEgenes_ControlvsTruncating_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_ControlvsTruncating, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+# Get top 300 differentially expressed genes between Control vs. Outside
+
+#res4$geneIDs = rownames(res4)
+
+#sigGenes_ControlvsOutside = as.data.frame(res4) %>% 
+#                                   top_n(300, wt=-padj) %>% 
+#                                   pull("geneIDs")
+
+#plotDat_ControlvsOutside <- vst(dds)[sigGenes_ControlvsOutside,] %>% 
+#  assay()
+#plotDat_ControlvsOutside <- vsd[sigGenes_ControlvsOutside,] %>% 
+#  assay()
+#z.mat_ControlvsOutside <- t(scale(t(plotDat_ControlvsOutside), center=TRUE, scale=TRUE))
+
+#pdf(file = paste0(deseq_outDir, "heatmap_top300DEgenes_ControlvsOutside_batchEffRemoved.pdf"),
+#    width = 12, height = 8)
+#Heatmap(z.mat_ControlvsOutside, name = "z-score",
+#        col = myRamp,            
+#        show_row_name = FALSE,
+#        #split=3,
+#        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+#        top_annotation = ha)
+#dev.off()
+
+# Get top 300 differentially expressed genes between Outside_degron vs. Within_degron
+
+res5$geneIDs = rownames(res5)
+
+sigGenes_Outside_degronvsWithin_degronSGS = as.data.frame(res5) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+#plotDat_Outside_degronvsWithin_degronSGS <- vst(dds)[sigGenes_Outside_degronvsWithin_degronSGS,] %>% 
+#  assay()
+plotDat_Outside_degronvsWithin_degronSGS <- vsd[sigGenes_Outside_degronvsWithin_degronSGS,] %>% 
+  assay()
+z.mat_Outside_degronvsWithin_degronSGS <- t(scale(t(plotDat_Outside_degronvsWithin_degronSGS), center=TRUE, scale=TRUE))
+
+pdf(file = paste0(deseq_outDir, "/heatmaps/heatmap_top300DEgenes_Outside_degronvsWithin_degronSGS_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_Outside_degronvsWithin_degronSGS, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+# Get top 300 differentially expressed genes between Within_degron vs. truncating
+
+res6$geneIDs = rownames(res6)
+
+sigGenes_within_degronSGSvstruncating = as.data.frame(res6) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+#plotDat_Outside_degronvsWithin_degronSGS <- vst(dds)[sigGenes_within_degronSGSvstruncating,] %>% 
+#  assay()
+plotDat_within_degronSGSvstruncating <- vsd[sigGenes_within_degronSGSvstruncating,] %>% 
+  assay()
+z.mat_within_degronSGSvstruncating <- t(scale(t(plotDat_within_degronSGSvstruncating), center=TRUE, scale=TRUE))
+
+pdf(file = paste0(deseq_outDir, "/heatmaps/heatmap_top300DEgenes_within_degronSGSvstruncating_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_within_degronSGSvstruncating, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+# Get top 300 differentially expressed genes between Outside_degron vs. truncating
+
+res7$geneIDs = rownames(res7)
+
+sigGenes_Outside_degronvstruncating = as.data.frame(res7) %>% 
+                                   top_n(300, wt=-padj) %>% 
+                                   pull("geneIDs")
+
+#plotDat_Outside_degronvsWithin_degronSGS <- vst(dds)[sigGenes_Outside_degronvsWithin_degronSGS,] %>% 
+#  assay()
+plotDat_Outside_degronvstruncating <- vsd[sigGenes_Outside_degronvstruncating,] %>% 
+  assay()
+z.mat_Outside_degronvstruncating <- t(scale(t(plotDat_Outside_degronvstruncating), center=TRUE, scale=TRUE))
+
+pdf(file = paste0(deseq_outDir, "/heatmaps/heatmap_top300DEgenes_Outside_degronvstruncating_batchEffRemoved.pdf"),
+    width = 12, height = 8)
+Heatmap(z.mat_Outside_degronvstruncating, name = "z-score",
+        col = myRamp,            
+        show_row_name = FALSE,
+        #split=3,
+        rect_gp = gpar(col = "lightgrey", lwd=0.3),
+        top_annotation = ha)
+dev.off()
+
+```
+
+```{r goanalysis}
+
+# tmp_df = data.frame(rn = res1$symbol, res1) %>%
+#        na.omit() %>%
+#        mutate(up = ifelse(log2FoldChange>0, padj, 1))
+
+# only for upregulated genes
+for (i in 1:7) {
+      
+  if (i==4) next
+  # tmp_df = data.frame(rn = rownames(get(paste0("res",i))), get(paste0("res",i))) %>%
+  #      na.omit() %>%
+  #      mutate(up = ifelse(log2FoldChange>0, padj, 1))
+  
+  tmp_df = data.frame(rn = get(paste0("res",i))$symbol, get(paste0("res",i))) %>%
+       na.omit() %>%
+       mutate(up = ifelse(log2FoldChange>0, padj, 1))
+
+# set the p-value for down regulations to 1
+# make a named vector
+tmp_condition_up = tmp_df$up
+names(tmp_condition_up) <- tmp_df$rn
+
+topDiffGenes<-function(x){ return(x<=0.1) }
+
+# 1) BP
+
+tg.BP = new("topGOdata",#just a name
+            description="tmp_condition_up",
+            ontology="BP",
+            allGenes=tmp_condition_up, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.BP, paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_BP_upRegulated_res", i,".rds"))
+
+numGenes(tg.BP)
+
+numSigGenes(tg.BP)
+
+fisher.res = runTest(tg.BP, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_BP = GenTable(tg.BP, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# 2) CC
+
+tg.CC = new("topGOdata",#just a name
+            description="tmp_condition_up",
+            ontology="CC",
+            allGenes=tmp_condition_up, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.CC, paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_CC_upRegulated_res", i,".rds"))
+
+numGenes(tg.CC)
+
+numSigGenes(tg.CC)
+
+fisher.res = runTest(tg.CC, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_CC = GenTable(tg.CC, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# 3) MF
+
+tg.MF = new("topGOdata",#just a name
+            description="tmp_condition_up",
+            ontology="MF",
+            allGenes=tmp_condition_up, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.MF, paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_MF_upRegulated_res", i,".rds"))
+
+numGenes(tg.MF)
+
+numSigGenes(tg.MF)
+
+fisher.res = runTest(tg.MF, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_MF = GenTable(tg.MF, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# Plot
+
+fishtab_BP2 = fishtab_BP[1:10, c(2,4)]
+fishtab_BP2$ontology = "BP"
+fishtab_CC2 = fishtab_CC[1:10, c(2,4)]
+fishtab_CC2$ontology = "CC"
+fishtab_MF2 = fishtab_MF[1:10, c(2,4)]
+fishtab_MF2$ontology = "MF"
+
+p1 = ggplot(fishtab_BP2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "green") + ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+p2 = ggplot(fishtab_CC2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "red") + labs(x = "GO Terms") +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() +
+  theme(axis.title.x=element_blank())
+p3 = ggplot(fishtab_MF2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "blue") +  labs(y = "Number of genes") +  ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.title.y=element_blank())
+
+plot_grid(p1, p2, p3, nrow = 3, ncol = 1)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO/GOtermsUp_res", i,".pdf"), width = 8, height = 15)
+
+go_termsList_BP = fishtab_BP[1:10,] %>% arrange(desc(Significant))
+write.table(go_termsList_BP, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_termList_UpBP_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+
+go_termsList_CC = fishtab_CC[1:10, ]%>% arrange(desc(Significant))
+write.table(go_termsList_CC, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_termList_UpCC_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+
+go_termsList_MF = fishtab_MF[1:10, ]%>% arrange(desc(Significant))
+write.table(go_termsList_MF, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_termList_UpMF_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+}
+
+
+# for downregulated genes
+
+for (i in 1:7) {
+      
+  if (i==4) next
+  # tmp_df = data.frame(rn = rownames(get(paste0("res",i))), get(paste0("res",i))) %>%
+  #      na.omit() %>%
+  #      mutate(down = ifelse(log2FoldChange<0, padj, 1))
+  tmp_df = data.frame(rn = get(paste0("res",i))$symbol, get(paste0("res",i))) %>%
+       na.omit() %>%
+       mutate(down = ifelse(log2FoldChange<0, padj, 1))
+# set the p-value for down regulations to 1
+# make a named vector
+tmp_condition_down = tmp_df$down
+names(tmp_condition_down) <- tmp_df$rn
+
+topDiffGenes<-function(x){ return(x<=0.1) }
+
+# 1) BP
+
+tg.BP = new("topGOdata",#just a name
+            description="tmp_condition_down",
+            ontology="BP",
+            allGenes=tmp_condition_down, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.BP, paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_BP_downRegulated_res", i,".rds"))
+
+numGenes(tg.BP)
+
+numSigGenes(tg.BP)
+
+fisher.res = runTest(tg.BP, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_BP = GenTable(tg.BP, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# retrieve geens2GO list from the annoation in GO data
+  allGO_BP = genesInTerm(tg.BP)
+  
+# 2) CC
+
+tg.CC = new("topGOdata",#just a name
+            description="tmp_condition_down",
+            ontology="CC",
+            allGenes=tmp_condition_down, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.CC, paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_CC_downRegulated_res", i,".rds"))
+
+numGenes(tg.CC)
+
+numSigGenes(tg.CC)
+
+fisher.res = runTest(tg.CC, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_CC = GenTable(tg.CC, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+# retrieve geens2GO list from the annoation in GO data
+  allGO_CC = genesInTerm(tg.CC)
+
+# 3) MF
+
+tg.MF = new("topGOdata",#just a name
+            description="tmp_condition_down",
+            ontology="MF",
+            allGenes=tmp_condition_down, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.MF, paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_MF_downRegulated_res", i,".rds"))
+
+numGenes(tg.MF)
+
+numSigGenes(tg.MF)
+
+fisher.res = runTest(tg.MF, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_MF = GenTable(tg.MF, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# retrieve geens2GO list from the annoation in GO data
+  allGO_MF = genesInTerm(tg.MF)
+
+  # Plot
+
+fishtab_BP2 = fishtab_BP[1:10, c(2,4)]
+fishtab_BP2$ontology = "BP"
+fishtab_CC2 = fishtab_CC[1:10, c(2,4)]
+fishtab_CC2$ontology = "CC"
+fishtab_MF2 = fishtab_MF[1:10, c(2,4)]
+fishtab_MF2$ontology = "MF"
+
+p1 = ggplot(fishtab_BP2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "green") + ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank())
+p2 = ggplot(fishtab_CC2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "red") + labs(x = "GO Terms") +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() +
+  theme(axis.title.x=element_blank())
+p3 = ggplot(fishtab_MF2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "blue") +  labs(y = "Number of genes") +  ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.title.y=element_blank())
+
+plot_grid(p1, p2, p3, nrow = 3, ncol = 1)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO/GOtermsDown_res", i,".pdf"), width = 8, height = 15)
+
+go_termsList_BP = fishtab_BP[1:10,] %>% arrange(desc(Significant))
+write.table(go_termsList_BP, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_termList_downBP_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+
+go_termsList_CC = fishtab_CC[1:10, ]%>% arrange(desc(Significant))
+write.table(go_termsList_CC, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_termList_downCC_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+
+go_termsList_MF = fishtab_MF[1:10, ]%>% arrange(desc(Significant))
+write.table(go_termsList_MF, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO/GO_termList_downMF_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+}
+
+#####this part doesn't work anymore so ignored, need to check orginal script#####
+  # Make gene lists for each GO term in BP, CC and MF, for every condition pair
+  
+  go_terms_BP = fishtab_BP$GO.ID[1:10]
+  go_terms_CC = fishtab_CC$GO.ID[1:10]
+  go_terms_MF = fishtab_MF$GO.ID[1:10]
+  
+  for (j in c("BP", "CC", "MF")) {
+    
+    tmp_annotation = lapply(get(paste0("allGO_", j)), function(x) x[x %in% names(tmp_condition_up)])
+    
+      for (l in 1:10) {
+        
+        tmp_ensembl_gene_list = tmp_annotation[[get(paste0("go_terms_", j))[l]]]
+        
+        geneIDs = ensembldb::select(EnsDb.Hsapiens.v79, 
+                                    keys = tmp_ensembl_gene_list, 
+                                    keytype = "GENEID", 
+                                    columns = c("SYMBOL","GENEID"))
+        write.table(geneIDs, 
+                    paste0(deseq_outDir, "GOtermAnalysis/topGO/gene_lists/GO_geneList_", j, "_",
+                           noquote(get(paste0("go_terms_", j))[l]), 
+                           "_res_", i, ".txt"), quote = F, row.names = F)
+        
+      }
+  }
+#}
+
+
+```
+# GOterm analysis
+## topGO
+
+```{r goanalysis: 1 UP: topGo ok}
+# first follow what Gokberk did using topGO
+# only for upregulated genes
+
+
+# Function to retrieve full GO term names
+get_full_GO_terms <- function(go_ids) {
+ sapply(go_ids, function(go_id) {
+   tryCatch({
+     Term(GOTERM[[go_id]])
+   }, error = function(e) {
+     return(NA)
+   })
+ })
+}
+
+# Perform GO term enrichment and plotting
+for (i in 1:7) {
+      
+  if (i==4) next
+  # tmp_df = data.frame(rn = rownames(get(paste0("res",i))), get(paste0("res",i))) %>%
+  #      na.omit() %>%
+  #      mutate(up = ifelse(log2FoldChange>0, padj, 1))
+  tmp_df = data.frame(rn = get(paste0("res",i))$symbol, get(paste0("res",i))) %>%
+       na.omit() %>%
+       mutate(up = ifelse(log2FoldChange>0, padj, 1))
+library
+# set the p-value for up regulations to 1
+# make a named vector
+tmp_condition_up = tmp_df$up
+names(tmp_condition_up) <- tmp_df$rn
+
+topDiffGenes<-function(x){ return(x<=0.1) }
+
+# 1) BP
+
+tg.BP = new("topGOdata",#just a name
+            description="tmp_condition_up",
+            ontology="BP",
+            allGenes=tmp_condition_up, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL", #need to choose correct gene annotation for org.Hs.eg.db
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.BP, paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_BP_upRegulated_res", i,".rds"))
+
+numGenes(tg.BP)
+
+numSigGenes(tg.BP)
+
+fisher.res = runTest(tg.BP, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_BP = GenTable(tg.BP, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# Retrieve full GO terms for BP
+fishtab_BP$Term = get_full_GO_terms(fishtab_BP$GO.ID)
+
+# 2) CC
+
+tg.CC = new("topGOdata",#just a name
+            description="tmp_condition_up",
+            ontology="CC",
+            allGenes=tmp_condition_up, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.CC, paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_CC_upRegulated_res", i,".rds"))
+
+numGenes(tg.CC)
+
+numSigGenes(tg.CC)
+
+fisher.res = runTest(tg.CC, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_CC = GenTable(tg.CC, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# Retrieve full GO terms for CC
+fishtab_CC$Term = get_full_GO_terms(fishtab_CC$GO.ID)
+
+
+# 3) MF
+
+tg.MF = new("topGOdata",#just a name
+            description="tmp_condition_up",
+            ontology="MF",
+            allGenes=tmp_condition_up, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.MF, paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_MF_upRegulated_res", i,".rds"))
+
+numGenes(tg.MF)
+
+numSigGenes(tg.MF)
+
+fisher.res = runTest(tg.MF, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_MF = GenTable(tg.MF, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# Retrieve full GO terms for MF
+fishtab_MF$Term = get_full_GO_terms(fishtab_MF$GO.ID)
+
+# save top 30 GO term list
+# The "significant" column indicates the number of genes or proteins significantly associated with each GO term. It provides a direct measure of the strength of association between the GO term and the gene/protein set, accounting for multiple testing if appropriate.
+go_termsList_BP = fishtab_BP[1:30,] %>% arrange(desc(Significant))
+write.table(go_termsList_BP, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_termList_top30upBP_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+
+go_termsList_CC = fishtab_CC[1:30, ]%>% arrange(desc(Significant))
+write.table(go_termsList_CC, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_termList_top30upCC_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+
+go_termsList_MF = fishtab_MF[1:30, ]%>% arrange(desc(Significant))
+write.table(go_termsList_MF, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_termList_top30upMF_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+# Extract and save genes in each GO term for BP, CC, and MF
+  genes_BP <- genesInTerm(tg.BP, fishtab_BP$GO.ID[1:20])
+  genes_CC <- genesInTerm(tg.CC, fishtab_CC$GO.ID[1:20])
+  genes_MF <- genesInTerm(tg.MF, fishtab_MF$GO.ID[1:20])
+  
+# Save to text file
+  sink(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_terms_genes_up_res", i, ".txt"))
+  cat("BP Genes:\n")
+  for (go_id in names(genes_BP)) {
+    cat(paste("GO Term:", go_id, "\n"))
+    cat(paste(genes_BP[[go_id]], collapse = "\n"), "\n\n")
+  }
+  cat("CC Genes:\n")
+  for (go_id in names(genes_CC)) {
+    cat(paste("GO Term:", go_id, "\n"))
+    cat(paste(genes_CC[[go_id]], collapse = "\n"), "\n\n")
+  }
+  cat("MF Genes:\n")
+  for (go_id in names(genes_MF)) {
+    cat(paste("GO Term:", go_id, "\n"))
+    cat(paste(genes_MF[[go_id]], collapse = "\n"), "\n\n")
+  }
+  sink()
+
+# Plot without REVIGO
+
+fishtab_BP2 = fishtab_BP[1:10, c(2,4)]
+fishtab_BP2$ontology = "BP"
+fishtab_CC2 = fishtab_CC[1:10, c(2,4)]
+fishtab_CC2$ontology = "CC"
+fishtab_MF2 = fishtab_MF[1:10, c(2,4)]
+fishtab_MF2$ontology = "MF"
+
+# Wrap text for y-axis labels
+  fishtab_BP2$Term <- str_wrap(fishtab_BP2$Term, width = 40)
+  fishtab_CC2$Term <- str_wrap(fishtab_CC2$Term, width = 40)
+  fishtab_MF2$Term <- str_wrap(fishtab_MF2$Term, width = 40)
+
+p1 = ggplot(fishtab_BP2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "darkgreen") + ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.text.y = element_text(size = 8),
+    axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        plot.margin = unit(c(0.5, 0.5, 0.5, 4), "cm"))
+p2 = ggplot(fishtab_CC2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "purple") + labs(x = "GO Terms") +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() +
+  theme(axis.text.y = element_text(size = 8),
+    axis.title.x=element_blank(),
+        plot.margin = unit(c(0.5, 0.5, 0.5, 4), "cm"))
+p3 = ggplot(fishtab_MF2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "orange") +  labs(y = "Number of genes") +  ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.text.y = element_text(size = 8),
+    axis.title.y=element_blank(),
+        plot.margin = unit(c(0.5, 0.5, 0.5, 4), "cm"))
+
+# # dont know why not saved probably when ru in the for loop? but ok separately
+# #pdf(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GOtermsup_res", i,".pdf"), width = 8, height = 15)
+plot_grid(p1, p2, p3, nrow = 3, ncol = 1)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GOtermsup_res", i,".pdf"), width = 8, height = 15)
+# #dev.off()
+
+# use rrvgo to reduce redundant GO terms https://ssayols.github.io/rrvgo/articles/rrvgo.html
+# Get reduced redundant GO terms for all GO terms sorted by Fisher pvalue
+
+# BP
+go_termsList_BP = fishtab_BP[1:50, ] #%>% arrange(desc(Significant))
+#go_termsList_BP = fishtab_BP
+simMatrix_BP <- calculateSimMatrix(go_termsList_BP$GO.ID,
+                                orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+# Convert the "Fisher" column to numeric
+go_termsList_BP$Fisher <- as.numeric(go_termsList_BP$Fisher)
+scores_BP <- setNames(-log10(go_termsList_BP$Fisher), go_termsList_BP$GO.ID)
+reducedTerms_BP <- reduceSimMatrix(simMatrix_BP,
+                                scores_BP,
+                                threshold=0.7,
+                                orgdb="org.Hs.eg.db")
+#save top50 reduced GO terms
+write.table(reducedTerms_BP,
+              paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGO_top50termList_upBP_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+# plot relationship of GO terms usinf scatter plots
+#pdf(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50upBP_scatter_res", i,".pdf"), width = 8, height = 8)
+scatterPlot(simMatrix_BP, reducedTerms_BP)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50upBP_scatter_res", i,".pdf"), width = 8, height = 8)
+#dev.off()
+
+# CC
+go_termsList_CC = fishtab_CC[1:50, ] #%>% arrange(desc(Significant))
+#go_termsList_CC = fishtab_CC
+simMatrix_CC <- calculateSimMatrix(go_termsList_CC$GO.ID,
+                                 orgdb="org.Hs.eg.db",
+                                 ont="CC",
+                                 method="Rel")
+# Convert the "Fisher" column to numeric
+go_termsList_CC$Fisher <- as.numeric(go_termsList_CC$Fisher)
+scores_CC <- setNames(-log10(go_termsList_CC$Fisher), go_termsList_CC$GO.ID)
+reducedTerms_CC <- reduceSimMatrix(simMatrix_CC,
+                                 scores_CC,
+                                 threshold=0.7,
+                                 orgdb="org.Hs.eg.db")
+#save top50 reduced GO terms
+write.table(reducedTerms_CC,
+               paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGO_termList_top50upCC_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+# plot relationship of GO terms usinf scatter plots
+# pdf(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50upCC_scatter_res", i,".pdf"), width = 8, height = 8)
+scatterPlot(simMatrix_CC, reducedTerms_CC)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50upCC_scatter_res", i,".pdf"), width = 8, height = 8)
+# dev.off()
+
+# MF
+go_termsList_MF = fishtab_MF[1:50, ] #%>% arrange(desc(Significant))
+#go_termsList_MF = fishtab_MF
+simMatrix_MF <- calculateSimMatrix(go_termsList_MF$GO.ID,
+                                 orgdb="org.Hs.eg.db",
+                                 ont="MF",
+                                 method="Rel")
+# Convert the "Fisher" column to numeric
+go_termsList_MF$Fisher <- as.numeric(go_termsList_MF$Fisher)
+scores_MF <- setNames(-log10(go_termsList_MF$Fisher), go_termsList_MF$GO.ID)
+reducedTerms_MF <- reduceSimMatrix(simMatrix_MF,
+                                 scores_MF,
+                                 threshold=0.7,
+                                 orgdb="org.Hs.eg.db")
+#save top50 reduced GO terms
+write.table(reducedTerms_MF,
+               paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGO_termList_top50upMF_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+# plot relationship of GO terms usinf scatter plots
+# pdf(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50upMF_scatter_res", i,".pdf"), width = 8, height = 8)
+scatterPlot(simMatrix_MF, reducedTerms_MF)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50upMF_scatter_res", i,".pdf"), width = 8, height = 8)
+
+# dev.off()
+}
+
+
+```
+
+DID'NT RUN FOR RES5-7
+
+```{r goanalysis: 1 DOWN: topGo ok}
+# first follow what Gokberk did using topGO
+# only for downregulated genes
+
+
+# Function to retrieve full GO term names
+get_full_GO_terms <- function(go_ids) {
+ sapply(go_ids, function(go_id) {
+   tryCatch({
+     Term(GOTERM[[go_id]])
+   }, error = function(e) {
+     return(NA)
+   })
+ })
+}
+
+# Perform GO term enrichment and plotting
+for (i in 1:7) {
+      
+  if (i==4) next
+  # tmp_df = data.frame(rn = rownames(get(paste0("res",i))), get(paste0("res",i))) %>%
+  #      na.omit() %>%
+  #      mutate(down = ifelse(log2FoldChange<0, padj, 1))
+  tmp_df = data.frame(rn = get(paste0("res",i))$symbol, get(paste0("res",i))) %>%
+       na.omit() %>%
+       mutate(down = ifelse(log2FoldChange<0, padj, 1))
+library
+# set the p-value for down regulations to 1
+# make a named vector
+tmp_condition_down = tmp_df$down
+names(tmp_condition_down) <- tmp_df$rn
+
+topDiffGenes<-function(x){ return(x<=0.1) }
+
+# 1) BP
+
+tg.BP = new("topGOdata",#just a name
+            description="tmp_condition_down",
+            ontology="BP",
+            allGenes=tmp_condition_down, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL", #need to choose correct gene annotation for org.Hs.eg.db
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.BP, paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_BP_downRegulated_res", i,".rds"))
+
+numGenes(tg.BP)
+
+numSigGenes(tg.BP)
+
+fisher.res = runTest(tg.BP, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_BP = GenTable(tg.BP, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# Retrieve full GO terms for BP
+fishtab_BP$Term = get_full_GO_terms(fishtab_BP$GO.ID)
+
+# 2) CC
+
+tg.CC = new("topGOdata",#just a name
+            description="tmp_condition_down",
+            ontology="CC",
+            allGenes=tmp_condition_down, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.CC, paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_CC_downRegulated_res", i,".rds"))
+
+numGenes(tg.CC)
+
+numSigGenes(tg.CC)
+
+fisher.res = runTest(tg.CC, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_CC = GenTable(tg.CC, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# Retrieve full GO terms for CC
+fishtab_CC$Term = get_full_GO_terms(fishtab_CC$GO.ID)
+
+
+# 3) MF
+
+tg.MF = new("topGOdata",#just a name
+            description="tmp_condition_down",
+            ontology="MF",
+            allGenes=tmp_condition_down, #named vector with adj. p-values
+            geneSel=topDiffGenes,
+            annot=annFUN.org,
+            nodeSize = 10, #minimum number of genes in a GO categorie
+            ID="SYMBOL",
+            mapping="org.Hs.eg.db")
+
+saveRDS(tg.MF, paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_MF_downRegulated_res", i,".rds"))
+
+numGenes(tg.MF)
+
+numSigGenes(tg.MF)
+
+fisher.res = runTest(tg.MF, algorithm="elim", statistic="fisher")
+fisher.res
+
+#p-value adjustment
+qval = p.adjust(score(fisher.res), method = "BH")
+summary(qval<0.1)
+
+fishtab_MF = GenTable(tg.MF, Fisher=fisher.res, orderBy="Fisher", topNodes = geneData(fisher.res)[4])
+
+# Retrieve full GO terms for MF
+fishtab_MF$Term = get_full_GO_terms(fishtab_MF$GO.ID)
+
+# save top 30 GO term list
+# The "significant" column indicates the number of genes or proteins significantly associated with each GO term. It provides a direct measure of the strength of association between the GO term and the gene/protein set, accounting for multiple testing if appropriate.
+go_termsList_BP = fishtab_BP[1:30,] %>% arrange(desc(Significant))
+write.table(go_termsList_BP, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_termList_top30downBP_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+
+go_termsList_CC = fishtab_CC[1:30, ]%>% arrange(desc(Significant))
+write.table(go_termsList_CC, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_termList_top30downCC_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+
+go_termsList_MF = fishtab_MF[1:30, ]%>% arrange(desc(Significant))
+write.table(go_termsList_MF, 
+              paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_termList_top30downMF_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+# Extract and save genes in each GO term for BP, CC, and MF
+  genes_BP <- genesInTerm(tg.BP, fishtab_BP$GO.ID[1:20])
+  genes_CC <- genesInTerm(tg.CC, fishtab_CC$GO.ID[1:20])
+  genes_MF <- genesInTerm(tg.MF, fishtab_MF$GO.ID[1:20])
+  
+# Save to text file
+  sink(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GO_terms_genes_down_res", i, ".txt"))
+  cat("BP Genes:\n")
+  for (go_id in names(genes_BP)) {
+    cat(paste("GO Term:", go_id, "\n"))
+    cat(paste(genes_BP[[go_id]], collapse = "\n"), "\n\n")
+  }
+  cat("CC Genes:\n")
+  for (go_id in names(genes_CC)) {
+    cat(paste("GO Term:", go_id, "\n"))
+    cat(paste(genes_CC[[go_id]], collapse = "\n"), "\n\n")
+  }
+  cat("MF Genes:\n")
+  for (go_id in names(genes_MF)) {
+    cat(paste("GO Term:", go_id, "\n"))
+    cat(paste(genes_MF[[go_id]], collapse = "\n"), "\n\n")
+  }
+  sink()
+
+# Plot without REVIGO
+
+fishtab_BP2 = fishtab_BP[1:10, c(2,4)]
+fishtab_BP2$ontology = "BP"
+fishtab_CC2 = fishtab_CC[1:10, c(2,4)]
+fishtab_CC2$ontology = "CC"
+fishtab_MF2 = fishtab_MF[1:10, c(2,4)]
+fishtab_MF2$ontology = "MF"
+
+# Wrap text for y-axis labels
+  fishtab_BP2$Term <- str_wrap(fishtab_BP2$Term, width = 40)
+  fishtab_CC2$Term <- str_wrap(fishtab_CC2$Term, width = 40)
+  fishtab_MF2$Term <- str_wrap(fishtab_MF2$Term, width = 40)
+
+p1 = ggplot(fishtab_BP2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "darkgreen") + ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.text.y = element_text(size = 8),
+    axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        plot.margin = unit(c(0.5, 0.5, 0.5, 4), "cm"))
+p2 = ggplot(fishtab_CC2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "purple") + labs(x = "GO Terms") +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() +
+  theme(axis.text.y = element_text(size = 8),
+    axis.title.x=element_blank(),
+        plot.margin = unit(c(0.5, 0.5, 0.5, 4), "cm"))
+p3 = ggplot(fishtab_MF2, aes(x = reorder(Term, Significant), y = Significant)) +
+  geom_bar(stat = "identity", fill = "orange") +  labs(y = "Number of genes") +  ylim(0, max(fishtab_CC2$Significant)) +
+  coord_flip() + facet_wrap(~ontology) + theme_minimal() + 
+  theme(axis.text.y = element_text(size = 8),
+    axis.title.y=element_blank(),
+        plot.margin = unit(c(0.5, 0.5, 0.5, 4), "cm"))
+
+# # dont know why not saved probably when ru in the for loop? but ok separately
+# #pdf(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GOtermsDown_res", i,".pdf"), width = 8, height = 15)
+plot_grid(p1, p2, p3, nrow = 3, ncol = 1)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/GOtermsDown_res", i,".pdf"), width = 8, height = 15)
+# #dev.off()
+
+# use rrvgo to reduce redundant GO terms https://ssayols.github.io/rrvgo/articles/rrvgo.html
+# Get reduced redundant GO terms for all GO terms sorted by Fisher pvalue
+
+# BP
+go_termsList_BP = fishtab_BP[1:50, ] #%>% arrange(desc(Significant))
+#go_termsList_BP = fishtab_BP
+simMatrix_BP <- calculateSimMatrix(go_termsList_BP$GO.ID,
+                                orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+# Convert the "Fisher" column to numeric
+go_termsList_BP$Fisher <- as.numeric(go_termsList_BP$Fisher)
+scores_BP <- setNames(-log10(go_termsList_BP$Fisher), go_termsList_BP$GO.ID)
+reducedTerms_BP <- reduceSimMatrix(simMatrix_BP,
+                                scores_BP,
+                                threshold=0.7,
+                                orgdb="org.Hs.eg.db")
+#save top50 reduced GO terms
+write.table(reducedTerms_BP,
+              paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGO_top50termList_downBP_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+# plot relationship of GO terms usinf scatter plots
+#pdf(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50DownBP_scatter_res", i,".pdf"), width = 8, height = 8)
+scatterPlot(simMatrix_BP, reducedTerms_BP)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50DownBP_scatter_res", i,".pdf"), width = 8, height = 8)
+#dev.off()
+
+# CC
+go_termsList_CC = fishtab_CC[1:50, ] #%>% arrange(desc(Significant))
+#go_termsList_CC = fishtab_CC
+simMatrix_CC <- calculateSimMatrix(go_termsList_CC$GO.ID,
+                                 orgdb="org.Hs.eg.db",
+                                 ont="CC",
+                                 method="Rel")
+# Convert the "Fisher" column to numeric
+go_termsList_CC$Fisher <- as.numeric(go_termsList_CC$Fisher)
+scores_CC <- setNames(-log10(go_termsList_CC$Fisher), go_termsList_CC$GO.ID)
+reducedTerms_CC <- reduceSimMatrix(simMatrix_CC,
+                                 scores_CC,
+                                 threshold=0.7,
+                                 orgdb="org.Hs.eg.db")
+#save top50 reduced GO terms
+write.table(reducedTerms_CC,
+               paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGO_termList_top50downCC_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+# plot relationship of GO terms usinf scatter plots
+# pdf(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50DownCC_scatter_res", i,".pdf"), width = 8, height = 8)
+scatterPlot(simMatrix_CC, reducedTerms_CC)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50DownCC_scatter_res", i,".pdf"), width = 8, height = 8)
+# dev.off()
+
+# MF
+go_termsList_MF = fishtab_MF[1:50, ] #%>% arrange(desc(Significant))
+#go_termsList_MF = fishtab_MF
+simMatrix_MF <- calculateSimMatrix(go_termsList_MF$GO.ID,
+                                 orgdb="org.Hs.eg.db",
+                                 ont="MF",
+                                 method="Rel")
+# Convert the "Fisher" column to numeric
+go_termsList_MF$Fisher <- as.numeric(go_termsList_MF$Fisher)
+scores_MF <- setNames(-log10(go_termsList_MF$Fisher), go_termsList_MF$GO.ID)
+reducedTerms_MF <- reduceSimMatrix(simMatrix_MF,
+                                 scores_MF,
+                                 threshold=0.7,
+                                 orgdb="org.Hs.eg.db")
+#save top50 reduced GO terms
+write.table(reducedTerms_MF,
+               paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGO_termList_top50downMF_res_", i, ".txt"), quote = F, row.names = F, sep = "\t")
+
+# plot relationship of GO terms usinf scatter plots
+# pdf(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50DownMF_scatter_res", i,".pdf"), width = 8, height = 8)
+scatterPlot(simMatrix_MF, reducedTerms_MF)
+ggsave(paste0(deseq_outDir, "GOtermAnalysis/topGO_MW/reducedGOterms_top50DownMF_scatter_res", i,".pdf"), width = 8, height = 8)
+
+# dev.off()
+}
+
+
+```
+
+
+
+```{r vennDiagram}
+#deseq_outDir = paste(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_HDF/diffexpression/MW_20221018/results/DESeq/",sep="")
+
+# Outside degron vs within degron vs truncating
+
+# Significantly UPregulated genes in Control vs 3 conditions
+# outside_up = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_res1.tab"), header = T)
+# inside_up = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_res2.tab"), header = T)
+# truncating_up = read.table(paste0(deseq_outDir, "sigDEgeneLists/sigUpRegulatedGenes_res3.tab"), header = T)
+
+outside_up = read.table(paste0(deseq_outDir, "sigDEgeneListsMW/res1_sigUpRegulatedGenes.tab"), header = T)
+outside_up = na.omit(outside_up)
+nrow(outside_up)
+write.csv(outside_up, file =paste0(deseq_outDir, "sigDEgeneListsMW/res1_sigUpRegulatedGenes_noNA.csv"))
+
+inside_up = read.table(paste0(deseq_outDir, "sigDEgeneListsMW/res2_sigUpRegulatedGenes.tab"), header = T)
+inside_up = na.omit(inside_up)
+nrow(inside_up)
+write.csv(inside_up, file =paste0(deseq_outDir, "sigDEgeneListsMW/res2_sigUpRegulatedGenes_noNA.csv"))
+
+truncating_up = read.table(paste0(deseq_outDir, "sigDEgeneListsMW/res3_sigUpRegulatedGenes.tab"), header = T)
+truncating_up = na.omit(truncating_up)
+nrow(truncating_up)
+write.csv(truncating_up, file =paste0(deseq_outDir, "sigDEgeneListsMW/res3_sigUpRegulatedGenes_noNA.csv"))
+
+n12_up = length(intersect(rownames(outside_up),rownames(inside_up)))
+write.table(outside_up[intersect(rownames(outside_up),rownames(inside_up)),"symbol"],
+            paste0(deseq_outDir, "/sigDEgeneListsMW/sigUpRegulatedGenes_outsidevsInsideOverlap_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+n23_up = length(intersect(rownames(inside_up),rownames(truncating_up)))
+write.table(outside_up[intersect(rownames(inside_up),rownames(truncating_up)),"symbol"],
+            paste0(deseq_outDir, "/sigDEgeneListsMW/sigUpRegulatedGenes_insidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+n13_up = length(intersect(rownames(outside_up),rownames(truncating_up)))
+write.table(outside_up[intersect(rownames(outside_up),rownames(truncating_up)),"symbol"],
+            paste0(deseq_outDir, "/sigDEgeneListsMW/sigUpRegulatedGenes_outsidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+n123_up = length(intersect(rownames(truncating_up),intersect(rownames(outside_up),rownames(inside_up))))
+write.table(outside_up[intersect(rownames(truncating_up),intersect(rownames(outside_up),rownames(inside_up))),"symbol"],
+            paste0(deseq_outDir, "/sigDEgeneListsMW/sigUpRegulatedGenes_truncatingvsOutsidevsInside_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+venn_up = draw.triple.venn(nrow(outside_up),nrow(inside_up),nrow(truncating_up),
+                 n12_up, n23_up, n13_up, n123_up,
+                 c("Outside_degron", "Within_degron", "Truncating"),
+                 fill = c("deepskyblue", "orange", "darkorchid1"),
+                 lwd = 0,  # Removes the black border
+                  cat.cex = 1.5,  # Adjusts category label size
+                  cex = 1.2,  # Adjusts the number size
+                  fontface = "plain",  # Ensures a consistent font style
+                  cat.fontface = "plain",
+                  cat.fontfamily = "sans",  # Change category labels to Arial
+                  fontfamily = "sans"  # Change numbers to Arial
+)
+
+pdf(paste0(deseq_outDir, "vennDiagrams/GA/venn_sigDEgenesUp_outsideVSinsideVStruncating.pdf"),
+    width = 8, height = 8)
+grid.draw(venn_up)
+dev.off()
+
+# Significantly DOWNregulated genes in Control vs 3 conditions
+outside_down = read.table(paste0(deseq_outDir, "sigDEgeneListsMW/res1_sigDownRegulatedGenes.tab"), header = T)
+outside_down = na.omit(outside_down)
+nrow(outside_down)
+write.csv(outside_down, file =paste0(deseq_outDir, "sigDEgeneListsMW/res1_sigDownRegulatedGenes_noNA.csv"))
+
+inside_down = read.table(paste0(deseq_outDir, "sigDEgeneListsMW/res2_sigDownRegulatedGenes.tab"), header = T)
+inside_down = na.omit(inside_down)
+nrow(inside_down)
+write.csv(inside_down, file =paste0(deseq_outDir, "sigDEgeneListsMW/res2_sigDownRegulatedGenes_noNA.csv"))
+
+truncating_down = read.table(paste0(deseq_outDir, "sigDEgeneListsMW/res3_sigDownRegulatedGenes.tab"), header = T)
+truncating_down = na.omit(truncating_down)
+nrow(truncating_down)
+write.csv(truncating_down, file =paste0(deseq_outDir, "sigDEgeneListsMW/res3_sigDownRegulatedGenes_noNA.csv"))
+
+n12_down = length(intersect(rownames(outside_down),rownames(inside_down)))
+write.table(outside_down[intersect(rownames(outside_down),rownames(inside_down)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneListsMW/sigDownRegulatedGenes_outsidevsInsideOverlap_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+n23_down = length(intersect(rownames(inside_down),rownames(truncating_down)))
+write.table(outside_down[intersect(rownames(inside_down),rownames(truncating_down)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneListsMW/sigDownRegulatedGenes_insidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+n13_down = length(intersect(rownames(outside_down),rownames(truncating_down)))
+write.table(outside_down[intersect(rownames(outside_down),rownames(truncating_down)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneListsMW/sigDownRegulatedGenes_outsidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+n123_down = length(intersect(rownames(truncating_down),intersect(rownames(outside_down),rownames(inside_down))))
+write.table(outside_down[intersect(rownames(truncating_down),intersect(rownames(outside_down),rownames(inside_down))),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneListsMW/sigDownRegulatedGenes_truncatingvsOutsidevsInside_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+venn_down = draw.triple.venn(nrow(outside_down),nrow(inside_down),nrow(truncating_down),
+                 n12_down, n23_down, n13_down, n123_down,
+                 c("Outside_degron", "Within_degron", "Truncating"),
+                 fill = c("deepskyblue", "orange", "darkorchid1"),
+                 lwd = 0,  # Removes the black border
+                  cat.cex = 1.5,  # Adjusts category label size
+                  cex = 1.2,  # Adjusts the number size
+                  fontface = "plain",  # Ensures a consistent font style
+                  cat.fontface = "plain",
+                  cat.fontfamily = "sans",  # Change category labels to Arial
+                  fontfamily = "sans"  # Change numbers to Arial
+)
+pdf(paste0(deseq_outDir, "vennDiagrams/GA/venn_sigDEgenesDown_outsideVSinsideVStruncating.pdf"),
+    width = 8, height = 8)
+grid.draw(venn_down)
+dev.off()
+
+# Make a Venn Diagram for all sig DE genes
+# and also a print out list of them
+# done
+
+outside_DEG = rbind(outside_up, outside_down)
+nrow(outside_DEG)
+write.csv(outside_DEG, file =paste0(deseq_outDir, "sigDEgeneLists/res1_sigAllDEGenes_noNA.csv"))
+
+inside_DEG = rbind(inside_up, inside_down)
+nrow(inside_DEG)
+write.csv(inside_DEG, file =paste0(deseq_outDir, "sigDEgeneLists/res2_sigAllDEGenes_noNA.csv"))
+
+truncating_DEG = rbind(truncating_up, truncating_down)
+nrow(truncating_DEG)
+write.csv(truncating_DEG, file =paste0(deseq_outDir, "sigDEgeneLists/res3_sigAllDEGenes_noNA.csv"))
+
+
+n12_DEG = length(intersect(rownames(outside_DEG),rownames(inside_DEG)))
+write.table(outside_DEG[intersect(rownames(outside_DEG),rownames(inside_DEG)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneLists/sigDEG_outsidevsInsideOverlap_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+n23_DEG = length(intersect(rownames(inside_DEG),rownames(truncating_DEG)))
+write.table(outside_DEG[intersect(rownames(inside_DEG),rownames(truncating_DEG)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneLists/sigDEG_insidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+n13_DEG = length(intersect(rownames(outside_DEG),rownames(truncating_DEG)))
+write.table(outside_DEG[intersect(rownames(outside_DEG),rownames(truncating_DEG)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneLists/sigDEG_outsidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+n123_DEG = length(intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))))
+write.table(outside_DEG[intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneLists/sigDEG_truncatingvsOutsidevsInside_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+venn_DEG = draw.triple.venn(nrow(outside_DEG),nrow(inside_DEG),nrow(truncating_DEG),
+                 n12_DEG, n23_DEG, n13_DEG, n123_DEG,
+                 c("Outside_degron", "Within_degron", "Truncating"),
+                 fill = c("deepskyblue", "orange", "darkorchid1"),
+                 lwd = 0,  # Removes the black border
+                  cat.cex = 1.5,  # Adjusts category label size
+                  cex = 1.2,  # Adjusts the number size
+                  fontface = "plain",  # Ensures a consistent font style
+                  cat.fontface = "plain",
+                  cat.fontfamily = "sans",  # Change category labels to Arial
+                  fontfamily = "sans"  # Change numbers to Arial
+)
+pdf(paste0(deseq_outDir, "vennDiagrams/GA/venn_sigDEG_outsideVSinsideVStruncating_v1.pdf"),
+    width = 8, height = 8)
+grid.draw(venn_DEG)
+dev.off()
+
+# Make a Venn Diagram for all sig DE genes (from mine)
+outside_DEG = read.table(paste0(deseq_outDir, "sigDEgeneListsMW/res1_sigAllDEGenes.tab"), header = T)
+outside_DEG = na.omit(outside_DEG)
+nrow(outside_DEG)
+write.csv(outside_DEG, file =paste0(deseq_outDir, "sigDEgeneListsMW/res1_sigAllDEGenes_noNA.csv"))
+
+inside_DEG = read.table(paste0(deseq_outDir, "sigDEgeneListsMW/res2_sigAllDEGenes.tab"), header = T)
+inside_DEG = na.omit(inside_DEG)
+nrow(inside_DEG)
+write.csv(inside_DEG, file =paste0(deseq_outDir, "sigDEgeneListsMW/res2_sigAllDEGenes_noNA.csv"))
+
+truncating_DEG = read.table(paste0(deseq_outDir, "sigDEgeneListsMW/res3_sigAllDEGenes.tab"), header = T)
+truncating_DEG = na.omit(truncating_DEG)
+nrow(truncating_DEG)
+write.csv(truncating_DEG, file =paste0(deseq_outDir, "sigDEgeneListsMW/res3_sigAllDEGenes_noNA.csv"))
+
+
+n12_DEG = length(intersect(rownames(outside_DEG),rownames(inside_DEG)))
+write.table(outside_DEG[intersect(rownames(outside_DEG),rownames(inside_DEG)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneListsMW/sigDEG_outsidevsInsideOverlap_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+n23_DEG = length(intersect(rownames(inside_DEG),rownames(truncating_DEG)))
+write.table(outside_DEG[intersect(rownames(inside_DEG),rownames(truncating_DEG)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneListsMW/sigDEG_insidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+n13_DEG = length(intersect(rownames(outside_DEG),rownames(truncating_DEG)))
+write.table(outside_DEG[intersect(rownames(outside_DEG),rownames(truncating_DEG)),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneListsMW/sigDEG_outsidevsTruncating_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+n123_DEG = length(intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))))
+write.table(outside_DEG[intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))),"symbol"],
+            paste0(deseq_outDir, "sigDEgeneListsMW/sigDEG_truncatingvsOutsidevsInside_geneList.tab"),
+            quote = F, row.names = F, col.names = F)
+
+venn_DEG = draw.triple.venn(nrow(outside_DEG),nrow(inside_DEG),nrow(truncating_DEG),
+                 n12_DEG, n23_DEG, n13_DEG, n123_DEG,
+                 c("Outside_degron", "Within_degron", "Truncating"),
+                 fill = c("deepskyblue", "orange", "darkorchid1"),
+                 lwd = 0,  # Removes the black border
+                  cat.cex = 1.5,  # Adjusts category label size
+                  cex = 1.2,  # Adjusts the number size
+                  fontface = "plain",  # Ensures a consistent font style
+                  cat.fontface = "plain",
+                  cat.fontfamily = "sans",  # Change category labels to Arial
+                  fontfamily = "sans"  # Change numbers to Arial
+)
+pdf(paste0(deseq_outDir, "vennDiagrams/GA/venn_sigDEG_outsideVSinsideVStruncating_v2.pdf"),
+    width = 8, height = 8)
+grid.draw(venn_DEG)
+dev.off()
+
+# # Significantly DEGs in Control vs 3 conditions
+# outside_DEG = read.csv(paste0(deseq_outDir, "deseq_results/res_ControlvsOutsideDegron.csv"), header = T)
+# outside_DEG = subset(outside_DEG, outside_DEG$padj<0.1)
+# outside_DEG = subset(outside_DEG, outside_DEG$log2FoldChange >= 1 | outside_DEG$log2FoldChange <= -1)
+# outside_DEG = data.frame(outside_DEG)
+# rownames(outside_DEG)=outside_DEG$X
+# outside_DEG = outside_DEG[,-1]
+# nrow(outside_DEG)
+# #[1] 208
+# write.table(outside_DEG, paste0(deseq_outDir,"/sigDEgeneLists/filteredDEG_ControlvsOutside.tab"),
+#               quote = F, sep = "\t")
+# #removeNA
+# outside_DEG = read.table(paste0(deseq_outDir, "/sigDEgeneLists/filteredDEG_ControlvsOutside.tab"), header = T)
+# outside_DEG_noNA = na.omit(outside_DEG)
+# nrow(outside_DEG_noNA)
+# #[1] 197
+# write.table(outside_DEG_noNA, paste0(deseq_outDir,"/sigDEgeneLists/filteredDEG_ControlvsOutside_noNA.tab"),
+#               quote = F, sep = "\t")
+# 
+# 
+# 
+# inside_DEG = read.csv(paste0(deseq_outDir, "deseq_results/res_ControlvsWithin_degronSGS.csv"), header = T)
+# inside_DEG = subset(inside_DEG, inside_DEG$padj<0.1)
+# inside_DEG = subset(inside_DEG, inside_DEG$log2FoldChange >= 1 | inside_DEG$log2FoldChange <= -1)
+# inside_DEG = data.frame(inside_DEG)
+# rownames(inside_DEG)=inside_DEG$X
+# inside_DEG = inside_DEG[,-1]
+# nrow(inside_DEG)
+# #[1] 389
+# write.table(inside_DEG, paste0(deseq_outDir,"/sigDEgeneLists/filteredDEG_ControlvsWithin_degronSGS.tab"),
+#               quote = F, sep = "\t")
+# #removeNA
+# inside_DEG = read.table(paste0(deseq_outDir, "/sigDEgeneLists/filteredDEG_ControlvsWithin_degronSGS.tab"), header = T)
+# inside_DEG_noNA = na.omit(inside_DEG)
+# nrow(inside_DEG_noNA)
+# #[1] 366
+# write.table(inside_DEG_noNA, paste0(deseq_outDir,"/sigDEgeneLists/filteredDEG_ControlvsWithin_degronSGS_noNA.tab"),
+#               quote = F, sep = "\t")
+# 
+# 
+# truncating_DEG = read.csv(paste0(deseq_outDir, "deseq_results/res_ControlvsTruncating.csv"), header = T)
+# truncating_DEG = subset(truncating_DEG, truncating_DEG$padj<0.1)
+# truncating_DEG = subset(truncating_DEG, truncating_DEG$log2FoldChange >= 1 | truncating_DEG$log2FoldChange <= -1)
+# truncating_DEG = data.frame(truncating_DEG)
+# rownames(truncating_DEG)=truncating_DEG$X
+# truncating_DEG = truncating_DEG[,-1]
+# nrow(truncating_DEG)
+# #[1] 367
+# write.table(truncating_DEG, paste0(deseq_outDir,"/sigDEgeneLists/filteredDEG_ControlvsTruncating.tab"),
+#               quote = F, sep = "\t")
+# 
+# #removeNA
+# truncating_DEG = read.table(paste0(deseq_outDir, "/sigDEgeneLists/filteredDEG_ControlvsTruncating.tab"), header = T)
+# truncating_DEG_noNA = na.omit(truncating_DEG)
+# nrow(truncating_DEG_noNA)
+# #[1] 345
+# write.table(truncating_DEG_noNA, paste0(deseq_outDir,"/sigDEgeneLists/filteredDEG_ControlvsTruncating_noNA.tab"),
+#               quote = F, sep = "\t")
+# 
+# 
+# n12_DEG = length(intersect(rownames(outside_DEG),rownames(inside_DEG)))
+# write.table(outside_DEG[intersect(rownames(outside_DEG),rownames(inside_DEG)),"symbol"],
+#             paste0(deseq_outDir, "/sigDEgeneListsMW/DEG_outsidevsInsideOverlap_geneList.tab"),
+#             quote = F, row.names = F, col.names = F)
+# n23_DEG = length(intersect(rownames(inside_DEG),rownames(truncating_DEG)))
+# write.table(outside_DEG[intersect(rownames(inside_DEG),rownames(truncating_DEG)),"symbol"],
+#             paste0(deseq_outDir, "/sigDEgeneListsMW/DEG_insidevsTruncating_geneList.tab"),
+#             quote = F, row.names = F, col.names = F)
+# n13_DEG = length(intersect(rownames(outside_DEG),rownames(truncating_DEG)))
+# write.table(outside_DEG[intersect(rownames(outside_DEG),rownames(truncating_DEG)),"symbol"],
+#             paste0(deseq_outDir, "/sigDEgeneListsMW/DEG_outsidevsTruncating_geneList.tab"),
+#             quote = F, row.names = F, col.names = F)
+# n123_DEG = length(intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))))
+# write.table(outside_DEG[intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))),"symbol"],
+#             paste0(deseq_outDir, "/sigDEgeneListsMW/DEG_truncatingvsOutsidevsInside_geneList.tab"),
+#             quote = F, row.names = F, col.names = F)
+# 
+# venn_DEG = draw.triple.venn(nrow(outside_DEG),nrow(inside_DEG),nrow(truncating_DEG),
+#                  n12_DEG, n23_DEG, n13_DEG, n123_DEG,
+#                  c("Outside_degron", "Inside_degron", "Truncating"),
+#                  fill = c("blue", "red", "green"))
+# pdf(paste0(deseq_outDir, "vennDiagrams/GA/venn_DEG_outsideVSinsideVStruncating.pdf"),
+#     width = 12, height = 8)
+# grid.draw(venn_DEG)
+# dev.off()
+
+# #for overlapping of DEGs, autism and ID genes-----------------here--> this is odd, do i need this?start here
+# #outside
+# outsideDEG_ASD = length(intersect(rownames(outside_DEG),rownames(autism_genes)))
+# outsideDEG_ID = length(intersect(rownames(outside_DEG),rownames(ID_genes)))
+# 
+# truncatingDEG_ASD = length(intersect(rownames(autism_genes),rownames(truncating_DEG)))
+# truncatingDEG_ID = length(intersect(rownames(ID_genes),rownames(truncating_DEG)))
+# # 0 overlap for ASD or ID genes with truncating only
+# insideDEG_ASD = length(intersect(rownames(inside_DEG),rownames(autism_genes)))
+# insideDEG_ID = length(intersect(rownames(inside_DEG),rownames(ID_genes)))
+# # 0 overlap for ASD or ID genes with inside only
+# 
+# 115
+# write.table(outside_DEG[intersect(rownames(outside_DEG),rownames(truncating_DEG)),"symbol"],
+#             paste0(deseq_outDir, "/sigDEgeneListsMW/DEG_outsidevsTruncating_geneList.tab"),
+#             quote = F, row.names = F, col.names = F)
+# n123_DEG = length(intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))))
+# write.table(outside_DEG[intersect(rownames(truncating_DEG),intersect(rownames(outside_DEG),rownames(inside_DEG))),"symbol"],
+#             paste0(deseq_outDir, "/sigDEgeneListsMW/DEG_truncatingvsOutsidevsInside_geneList.tab"),
+#             quote = F, row.names = F, col.names = F)
+# 
+# venn_DEG = draw.triple.venn(nrow(outside_DEG),nrow(inside_DEG),nrow(truncating_DEG),
+#                  n12_DEG, n23_DEG, n13_DEG, n123_DEG,
+#                  c("Outside_degron", "Inside_degron", "Truncating"),
+#                  fill = c("blue", "red", "green"))
+# pdf(paste0(deseq_outDir, "vennDiagrams/GA/venn_DEG_outsideVSinsideVStruncating.pdf"),
+#     width = 12, height = 8)
+# grid.draw(venn_DEG)
+# dev.off()
+
+
+
+```
+
+
+# RRHO analysis to check global transcriptomics similarity between conditions
+
+```{r RRHO-2}
+#https://systems.crump.ucla.edu/rankrank/index.php
+# do for all genes
+# make lists for RRHO and save them as csv files, this works
+for (i in 1:7) {
+  if (i==4) next
+  
+  tmp_dds = get(paste0("res", i))
+  
+  # remove genes which could not be evaluated
+  # tmp_subset = data.frame(tmp_dds,
+  #                         stringsAsFactors = F %>%
+  #                         )
+  
+#  tmp_dds = tmp_dds[tmp_dds$padj<=0.05,] # here we get only sig DEs 
+  tmp_list = data.frame(element = tmp_dds$symbol,
+                        value = -log10(tmp_dds$pvalue)*sign(tmp_dds$log2FoldChange))
+  
+  write.csv(tmp_list, 
+            file = paste0(deseq_outDir, "RRHO_allGenes/list_", i, ".csv"),
+            quote = F, row.names = F)
+  
+}
+
+# run RRHO for each list pair, only do for res 1, 2, 3: Res1: control vs outside, Res2: control vs within SGS, Res3: control vs truncating LoF
+# now it also works
+  for (j in  1:3) {
+    if (j==4) next
+    
+    tmp_list1 = read.csv(paste0(deseq_outDir, "RRHO_allGenes/list_", j, ".csv"))
+    tmp_list1 = na.omit(tmp_list1) #remove the rows without a gene symbol
+    tmp_list1 = tmp_list1[order(tmp_list1$element, -abs(tmp_list1$value)),] #remove the duplicate genes and keep the one with a larger DE
+    tmp_list1 = tmp_list1[!duplicated(tmp_list1$element),]
+    
+    for (k in  1:3) {
+      if (k==4|k==j) next
+      
+      tmp_list2 = read.csv(paste0(deseq_outDir, "RRHO_allGenes/list_", k, ".csv"))
+      tmp_list2 = na.omit(tmp_list2)
+      tmp_list2 = tmp_list2[order(tmp_list2$element, -abs(tmp_list2$value)),]
+      tmp_list2 = tmp_list2[!duplicated(tmp_list2$element),]
+      
+  RRHO=    RRHO(tmp_list1, tmp_list2, 
+           stepsize = 100, 
+           labels = (c(as.character(j),as.character(k))), 
+           alternative = "enrichment", #100 us recommended as the step size
+           plots = T, outputdir = paste0(deseq_outDir, "RRHO_allGenes/"), 
+           BY = T,
+           log10.ind = T) 
+#same gene list length so no need to correct for that      
+
+              }
+  }
+
+
+
+```
+
+## plot normalized data for specific genes of interests
+
+```{r boxplot2grid}
+# Load necessary libraries
+# library(DESeq2)
+# library(dplyr)
+# library(ggplot2)
+# library(gridExtra)
+
+# dds4 here is only for plotting boxplots since i want symbols but not ensembl ids
+
+# dds4 = dds3
+# convert_to_symbol <- function(dds4) {
+#   symbols <- mapIds(org.Hs.eg.db,
+#                     keys = rownames(dds4),
+#                     column = "SYMBOL",
+#                     keytype = "ENSEMBL",
+#                     multiVals = "first")
+#   rownames(dds4) <- symbols
+#   return(dds4)
+# }
+# 
+# dds4 <- convert_to_symbol(dds4)
+
+# dds4 <- dds4[!is.na(rownames(dds4)), ]
+# nrow(dds4)
+# #[1] 14682
+
+# Read genes of interest
+goi = read.csv(paste0(dir, "lg-scrna/working_data/Maggie/working/setbp1_LoForg_bulkrna_b1/GOI_ok.csv"), header = TRUE)
+colnames(goi) = c("gene", "remarks")
+goi = goi$gene
+
+for (i in 1:3) {
+  # Load DESeq2 result object
+  tmp_dds = get(paste0("res", i))
+
+  # Remove genes that could not be evaluated
+  tmp_subset = data.frame(
+    #gene = rownames(tmp_dds),
+    tmp_dds,
+    stringsAsFactors = FALSE
+  ) %>%
+    na.omit() %>%
+    dplyr::filter(padj < 0.1) %>%
+    arrange(desc(abs(log2FoldChange))) #%>%
+    #rownames(tmp_subset) = tmp_subset$symbol
+  
+  # Get top 10 DEGs
+  top_10_DEGs = list(head(tmp_subset$symbol, 20))[[1]]
+  goi2 = c(top_10_DEGs, goi)
+  
+  total_genes = length(goi2)
+  processed_genes = 0
+  plots <- list()
+  
+  # Determine global y-axis limits
+  all_counts <- c()
+  
+  for (j in goi2) {
+    if (is.na(j)) {
+      next
+    }
+    #if (!any(tmp_subset$gene == j) && !any(rownames(tmp_dds) == j)) {
+    if (!any(tmp_subset$symbol == j, na.rm = TRUE) && !any(tmp_dds$symbol == j, na.rm = TRUE)) {
+      next
+    }
+    
+    tryCatch({
+      counts_data <- plotCounts(dds4, gene = j, intgroup = "condition", returnData = TRUE)
+      all_counts <- c(all_counts, counts_data$count)
+    }, error = function(e) {
+      cat("Error in extracting counts for gene", j, ":", e$message, "\n")
+    })
+  }
+  
+  y_min <- min(all_counts, na.rm = TRUE)
+  y_max <- max(all_counts, na.rm = TRUE)
+  
+  for (j in goi2) {
+    if (is.na(j)) {
+      cat("Skipping NA gene\n")
+      next
+    }
+    
+    #if (!any(tmp_subset$gene == j) && !any(rownames(tmp_dds) == j)) {
+    if (!any(tmp_subset$symbol == j, na.rm = TRUE) && !any(tmp_dds$symbol == j, na.rm = TRUE)) {
+
+      cat("Gene", j, "not in filtered tmp_subset or tmp_dds. Attempting to plot from original dataset.\n")
+      
+      # Attempt to plot from original dataset if data is available
+      if (!any(rownames(dds4) == j)) {
+        cat("Gene", j, "not found in original dataset, skipping\n")
+        next
+      }
+    }
+    
+    cat("Processing gene", j, "\n")
+    processed_genes <- processed_genes + 1
+    
+    tryCatch({
+      # Extract counts for the gene
+      counts_data <- plotCounts(dds4, gene = j, intgroup = "condition", returnData = TRUE)
+      
+      # Set the order of condition
+      counts_data$condition <- factor(counts_data$condition, levels = c("Control", "Within_degron", "Outside_degron", "Truncating"))
+      
+      # set colour
+      condition_colors <- c("Control" = "azure4",
+                            "Within_degron" = "orange",
+                      "Outside_degron" = "deepskyblue",
+                      "Truncating" = "darkorchid1")
+
+  
+      # Create a box plot
+      p <- ggplot(counts_data, aes(x = condition, y = count, fill = condition)) +
+        geom_boxplot(alpha = 0.5) +
+        geom_jitter(position = position_jitter(width = 0.1), color = "black", alpha = 0.5) +  # Add jittered points
+        labs(title = j, x = "Condition", y = "Log10(Normalized Count)") +
+        theme_classic() +
+        scale_y_log10(limits = c(y_min, y_max)) +
+        scale_fill_manual(values = condition_colors) + # Apply custom colors
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+      
+      # Add the plot to the list of plots
+      plots[[length(plots) + 1]] <- p
+    }, error = function(e) {
+      cat("Error in plotting gene", j, ":", e$message, "\n")
+    })
+  }
+  
+  # Arrange plots in a grid and save to a single PDF
+  if (length(plots) > 0) {
+    nrow_plots <- ceiling(length(plots) / 4)
+    pdf(file = paste0(deseq_outDir, "gene_boxplots/all_goi/res", i, "_combined.pdf"), width = 16, height = 4 * nrow_plots)
+    grid.arrange(grobs = plots, ncol = 4)
+    dev.off()
+  }
+  
+  cat("Total genes in goi2:", total_genes, "\n")
+  cat("Total processed genes:", processed_genes, "\n")
+}
+
+```
+
+### this find overlaps between two gene lists, do fisher exact test & plot venn diagram
+
+```{r overlaps 3}
+# Load necessary libraries
+# library(dplyr)
+# library(VennDiagram)
+# library(gridExtra)
+# library(stats)  # for Fisher's exact test
+
+# Define a function to plot Venn diagram and save as PDF
+plot_venn_pdf <- function(list_of_genes, labels, output_file) {
+  pdf(file = output_file, width = 10, height = 10)
+  venn.plot <- venn.diagram(
+    x = list_of_genes,
+    category.names = labels,
+    filename = NULL,  # Do not save as a file/.png
+    output = TRUE,
+    col = "black",
+    fill = c("cornflowerblue", "green"),  # Adjusted to 2 colors for 2 sets
+    alpha = 0.50,
+    cex = 2,
+    fontface = "bold",
+    fontfamily = "sans",
+    cat.cex = 2,
+    cat.fontface = "bold",
+    cat.default.pos = "outer",
+    cat.pos = c(-27, 27),  # Adjusted for 2 sets
+    cat.dist = c(0.055, 0.055),  # Adjusted for 2 sets
+    cat.fontfamily = "sans",
+    rotation.degree = 1  # Changed from rotation to rotation.degree
+  )
+  grid.draw(venn.plot)
+  dev.off()
+}
+
+# Define a function to perform Fisher's exact test
+perform_fishers_test <- function(set1, set2, universe_size) {
+  overlap <- length(intersect(set1, set2))
+  only_set1 <- length(set1) - overlap
+  only_set2 <- length(set2) - overlap
+  neither <- universe_size - length(union(set1, set2))
+  
+  contingency_table <- matrix(c(overlap, only_set1, only_set2, neither), 
+                              nrow = 2, 
+                              dimnames = list(c("In Set2", "Not in Set2"),
+                                              c("In Set1", "Not in Set1")))
+  
+  fisher_test_result <- fisher.test(contingency_table)
+  return(fisher_test_result$p.value)
+}
+
+# Read genes of interest
+overlapList_Dir = paste(dir, "lg-scrna/working_data/Maggie/working/bulk_rna_SETBP1_iNeuron/",sep="")
+
+setbp1_targets <- read.csv(paste0(overlapList_Dir, "Top70_putative_SETBP1_bindingsites.csv"), header = F)$V1
+setbp1_targets[1] = "EP300"
+ID_genes <- read.csv(paste0(overlapList_Dir, "ID_whole_panelapp.csv"), header = F)$V1
+autism_genes <- read.csv2(paste0(overlapList_Dir, "autism_whole_panelapp.csv"), header = F)$V1
+ectopicG870S <- read.csv2(paste0(overlapList_Dir, "ectopicG870S.csv"), header = F)$V1 #this one somehow has a lot of tabs in front of the gene name
+
+DEG_LoF_HDF <- read.csv(paste0(overlapList_Dir, "res_ControlvsTruncating_noNA.csv"), header = T)  %>%
+    dplyr::filter(padj < 0.1)
+DEG_LoF_HDF <- DEG_LoF_HDF$symbol
+
+DEG_SGS_HDF <- read.csv(paste0(overlapList_Dir, "res_ControlvsWithin_degronSGS_noNA.csv"), header = T)  %>%
+    dplyr::filter(padj < 0.1)
+DEG_SGS_HDF <- DEG_SGS_HDF$symbol
+
+DEG_outside_HDF <- read.csv(paste0(overlapList_Dir, "res_ControlvsOutsideDegron_noNA.csv"), header = T)  %>%
+    dplyr::filter(padj < 0.1)
+DEG_outside_HDF <- DEG_outside_HDF$symbol
+
+# Get DESeq files
+deseq_files <- list.files(paste0(deseq_outDir, "sigDEgeneListsMW"), pattern = "_sigAllDEGenes.csv", full.names = T)
+
+# Function to clean gene names
+clean_gene_names <- function(gene_vector) {
+  return(trimws(toupper(gene_vector)))
+}
+
+# Clean gene names in input lists
+setbp1_targets <- clean_gene_names(setbp1_targets)
+ID_genes <- clean_gene_names(ID_genes)
+autism_genes <- clean_gene_names(autism_genes)
+ectopicG870S <- clean_gene_names(ectopicG870S) #now there are no more tabs in front of gene names
+
+# Define the universe size (this should be the total number of genes considered in your DESeq analysis)
+universe_size <- 14481  # Replace with your actual universe size, got this from nrow(res1_deseq_results_noNA)
+
+# Check overlap for ID & autism genes
+overlap_ID_autism <- intersect(ID_genes, autism_genes)
+if (length(overlap_ID_autism) > 0) {
+  write.csv(overlap_ID_autism, 
+            file = paste0(deseq_outDir, "overlaps/ID_autism_overlap.csv"),
+            quote = F, row.names = F)
+  
+  plot_venn_pdf(
+    list(ID_genes, autism_genes),
+    c("ID Genes", "Autism Genes"),
+    paste0(deseq_outDir, "overlaps/ID_autism_venn.pdf")
+  )
+  
+  p_value <- perform_fishers_test(ID_genes, autism_genes, universe_size)
+  write.csv(data.frame(p_value = p_value), 
+            file = paste0(deseq_outDir, "overlaps/ID_autism_fishers_pvalue.csv"),
+            quote = F, row.names = F)
+} else {
+  print(paste("No overlap for ID & autism genes"))
+}
+
+# Process DESeq files
+for (i in deseq_files) {
+  
+  tmp_f <- read.csv(i, header = TRUE)
+  tmp_f_name <- tail(strsplit(i, "/")[[1]], 1) # always fetch the last part of the split path, which is the file name
+  
+  # Clean gene names in DESeq result
+  tmp_f$X <- clean_gene_names(tmp_f$symbol)
+  
+  # Check overlap for setbp1 targets
+  overlap_setbp1 <- intersect(setbp1_targets, tmp_f$X)
+  if (length(overlap_setbp1) > 0) {
+    write.csv(overlap_setbp1, 
+              file = paste0(deseq_outDir, "overlaps/setbp1Targets_overlap_", tmp_f_name),
+              quote = F, row.names = F)
+    
+    plot_venn_pdf(
+      list(setbp1_targets, tmp_f$X),
+      c("SETBP1 Targets", tmp_f_name),
+      paste0(deseq_outDir, "overlaps/setbp1Targets_venn_", tmp_f_name, ".pdf")
+    )
+    
+    p_value <- perform_fishers_test(setbp1_targets, tmp_f$X, universe_size)
+    write.csv(data.frame(p_value = p_value), 
+              file = paste0(deseq_outDir, "overlaps/setbp1Targets_fishers_pvalue_", tmp_f_name, ".csv"),
+              quote = F, row.names = F)
+  } else {
+    print(paste("No overlap for setbp1 targets in file", tmp_f_name))
+  }
+  
+  # Check overlap for ID genes
+  overlap_ID_genes <- intersect(ID_genes, tmp_f$X)
+  if (length(overlap_ID_genes) > 0) {
+    write.csv(overlap_ID_genes, 
+              file = paste0(deseq_outDir, "overlaps/panelapp_IDgenes_overlap_", tmp_f_name, ".csv"),
+              quote = F, row.names = F)
+    
+    plot_venn_pdf(
+      list(ID_genes, tmp_f$X),
+      c("ID Genes", tmp_f_name),
+      paste0(deseq_outDir, "overlaps/ID_genes_venn_", tmp_f_name, ".pdf")
+    )
+    
+    p_value <- perform_fishers_test(ID_genes, tmp_f$X, universe_size)
+    write.csv(data.frame(p_value = p_value), 
+              file = paste0(deseq_outDir, "overlaps/ID_genes_fishers_pvalue_", tmp_f_name, ".csv"),
+              quote = F, row.names = F)
+  } else {
+    print(paste("No overlap for ID genes in file", tmp_f_name))
+  }
+  
+  # Check overlap for autism genes
+  overlap_autism_genes <- intersect(autism_genes, tmp_f$X)
+  if (length(overlap_autism_genes) > 0) {
+    write.csv(overlap_autism_genes, 
+              file = paste0(deseq_outDir, "overlaps/panelapp_autism_genes_overlap_", tmp_f_name, ".csv"),
+              quote = F, row.names = F)
+    
+    plot_venn_pdf(
+      list(autism_genes, tmp_f$X),
+      c("Autism Genes", tmp_f_name),
+      paste0(deseq_outDir, "overlaps/autism_genes_venn_", tmp_f_name, ".pdf")
+    )
+    
+    p_value <- perform_fishers_test(autism_genes, tmp_f$X, universe_size)
+    write.csv(data.frame(p_value = p_value), 
+              file = paste0(deseq_outDir, "overlaps/autism_genes_fishers_pvalue_", tmp_f_name, ".csv"),
+              quote = F, row.names = F)
+  } else {
+    print(paste("No overlap for autism genes in file", tmp_f_name))
+  }
+  
+  # Check overlap for ectopicG870S
+  overlap_ectopicG870S <- intersect(ectopicG870S, tmp_f$X)
+  if (length(overlap_ectopicG870S) > 0) {
+    write.csv(overlap_ectopicG870S, 
+              file = paste0(deseq_outDir, "overlaps/ectopicG870S_DEG_overlap_", tmp_f_name),
+              quote = F, row.names = F)
+    
+    plot_venn_pdf(
+      list(ectopicG870S, tmp_f$X),
+      c("Ectopic G870S", tmp_f_name),
+      paste0(deseq_outDir, "overlaps/ectopicG870S_venn_", tmp_f_name, ".pdf")
+    )
+    
+    p_value <- perform_fishers_test(ectopicG870S, tmp_f$X, universe_size)
+    write.csv(data.frame(p_value = p_value), 
+              file = paste0(deseq_outDir, "overlaps/ectopicG870S_fishers_pvalue_", tmp_f_name, ".csv"),
+              quote = F, row.names = F)
+  } else {
+    print(paste("No overlap for ectopicG870S in file", tmp_f_name))
+  }
+  
+  # Check overlap for DEG of SETBP1 LoF HDF
+  overlap_DEG_LoF_HDF <- intersect(DEG_LoF_HDF, tmp_f$X)
+  if (length(overlap_DEG_LoF_HDF) > 0) {
+    write.csv(overlap_DEG_LoF_HDF, 
+              file = paste0(deseq_outDir, "overlaps/DEG_LoF_HDF_overlap_", tmp_f_name),
+              quote = F, row.names = F)
+    
+    plot_venn_pdf(
+      list(DEG_LoF_HDF, tmp_f$X),
+      c("DEG LoF HDF", tmp_f_name),
+      paste0(deseq_outDir, "overlaps/DEG_LoF_HDF_venn_", tmp_f_name, ".pdf")
+    )
+    
+    p_value <- perform_fishers_test(DEG_LoF_HDF, tmp_f$X, universe_size)
+    write.csv(data.frame(p_value = p_value), 
+              file = paste0(deseq_outDir, "overlaps/DEG_LoF_HDF_fishers_pvalue_", tmp_f_name, ".csv"),
+              quote = F, row.names = F)
+  } else {
+    print(paste("No overlap for DEG_LoF_HDF in file", tmp_f_name))
+  }
+  
+  # Check overlap for DEG of SETBP1 SGS HDF
+  overlap_DEG_SGS_HDF <- intersect(DEG_SGS_HDF, tmp_f$X)
+  if (length(overlap_DEG_SGS_HDF) > 0) {
+    write.csv(overlap_DEG_SGS_HDF, 
+              file = paste0(deseq_outDir, "overlaps/DEG_SGS_HDF_overlap_", tmp_f_name),
+              quote = F, row.names = F)
+    
+    plot_venn_pdf(
+      list(DEG_SGS_HDF, tmp_f$X),
+      c("DEG SGS HDF", tmp_f_name),
+      paste0(deseq_outDir, "overlaps/DEG_SGS_HDF_venn_", tmp_f_name, ".pdf")
+    )
+    
+    p_value <- perform_fishers_test(DEG_SGS_HDF, tmp_f$X, universe_size)
+    write.csv(data.frame(p_value = p_value), 
+              file = paste0(deseq_outDir, "overlaps/DEG_SGS_HDF_fishers_pvalue_", tmp_f_name, ".csv"),
+              quote = F, row.names = F)
+  } else {
+    print(paste("No overlap for DEG_SGS_HDF in file", tmp_f_name))
+  }
+  
+  
+  # Check overlap for DEG of SETBP1 SGS HDF
+  overlap_DEG_outside_HDF <- intersect(DEG_outside_HDF, tmp_f$X)
+  if (length(overlap_DEG_outside_HDF) > 0) {
+    write.csv(overlap_DEG_outside_HDF, 
+              file = paste0(deseq_outDir, "overlaps/DEG_outside_HDF_overlap_", tmp_f_name),
+              quote = F, row.names = F)
+    
+    plot_venn_pdf(
+      list(DEG_outside_HDF, tmp_f$X),
+      c("DEG outside HDF", tmp_f_name),
+      paste0(deseq_outDir, "overlaps/DEG_outside_HDF_venn_", tmp_f_name, ".pdf")
+    )
+    
+    p_value <- perform_fishers_test(DEG_outside_HDF, tmp_f$X, universe_size)
+    write.csv(data.frame(p_value = p_value), 
+              file = paste0(deseq_outDir, "overlaps/DEG_outside_HDF_fishers_pvalue_", tmp_f_name, ".csv"),
+              quote = F, row.names = F)
+  } else {
+    print(paste("No overlap for DEG_outside_HDF in file", tmp_f_name))
+  }
+  
+  summary(tmp_f$X)
+}
+
+```
+
+
+```{r session info}
+sessionInfo()
+
+```
+

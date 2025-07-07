@@ -1,0 +1,11 @@
+SETBP1 variants outside the degron disrupt DNA-binding, transcription and neuronal differentiation capacity to cause a 
+heterogeneous neurodevelopmental disorder [induced neurons]
+
+Different types of germline de novo SETBP1 variants cause clinically distinct and heterogeneous neurodevelopmental disorders: Schinzel-Giedion syndrome (SGS, via missense variants at a critical degron region) and SETBP1-haploinsufficiency disorder. However, due to the lack of systematic investigation of genotype-phenotype associations of different types of SETBP1 variants, and limited understanding of its roles in neurodevelopment, the extent of clinical heterogeneity and how this relates to underlying pathophysiological mechanisms remain elusive. This imposes challenges for diagnosis. Here, we present a comprehensive investigation of the largest cohort to-date of individuals carrying SETBP1 missense variants outside the degron region (n=18). We performed thorough clinical and speech phenotyping with functional follow-up using cellular assays and transcriptomics. Our findings suggest that such variants cause a clinically and functionally variable developmental syndrome, showing only partial overlaps with classical SGS and SETBP1-haploinsufficiency disorder. We provide evidence of loss-of-function pathophysiological mechanisms impairing ubiquitination, DNA-binding, transcription, and neuronal differentiation capacity and morphologies. In contrast to SGS and SETBP1 haploinsufficiency, these effects are independent of protein abundance. Overall, our study provides important novel insights into diagnosis, patient care, and aetiology of SETBP1-related disorders.
+
+RNA-seq profiling of induced neurons generated from human skin fibroblasts from healthy controls and patients with SETBP1-related disorders. Three biological replicates, i.e. differentiation experiments, were included.
+
+Raw files for human/patient samples were not submitted to GEO due to concerns about submitting personally identifiable sequence data for open access.
+
+This script was used for analysing RNAseq data generated from fibroblasts. Processed data and metadata are available at GEO accession: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE301239
+sample information sheet is also available Supplementary Data 7 file in the manuscript.
